@@ -1,0 +1,99 @@
+{
+  "projectType": "saas",
+  "projectName": "Kairo — Riwi Learning Platform",
+  "projectDescription": "An AI-powered personalized learning platform for Riwi bootcamp students (Coders) and Team Leaders, generating adaptive 4-week study plans from academic data and soft-skills assessments.",
+  "theme": "palm",
+  "primaryColor": "#6C3CE1",
+  "lightColor": "#EDE9FC",
+  "darkColor": "#2D1A6E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart", "architecture"]
+          },
+          {
+            "group": "Setup",
+            "pages": ["setup/environment", "setup/database", "setup/running-locally"]
+          }
+        ]
+      },
+      {
+        "tab": "Features",
+        "groups": [
+          {
+            "group": "Coder Experience",
+            "pages": ["features/onboarding", "features/learning-plan", "features/focus-cards", "features/ai-trainer", "features/activity-tracking"]
+          },
+          {
+            "group": "Team Leader Experience",
+            "pages": ["features/tl-dashboard", "features/risk-detection", "features/ai-reports", "features/feedback"]
+          },
+          {
+            "group": "Authentication",
+            "pages": ["features/auth-overview", "features/social-login"]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Node.js API Gateway",
+            "pages": ["api/overview", "api/auth", "api/coder", "api/tl", "api/ia", "api/notifications", "api/assignments", "api/diagnostic"]
+          },
+          {
+            "group": "Python AI Microservice",
+            "pages": ["api/ai/generate-plan", "api/ai/focus-cards", "api/ai/chat", "api/ai/reports", "api/ai/exercises", "api/ai/search-resources"]
+          }
+        ]
+      },
+      {
+        "tab": "Database",
+        "groups": [
+          {
+            "group": "Schema",
+            "pages": ["database/overview", "database/schema", "database/enums", "database/views"]
+          },
+          {
+            "group": "Operations",
+            "pages": ["database/migrations", "database/seeds", "database/rls-policies"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-generated personalized 4-week learning plans based on Moodle academic data",
+    "Soft skills assessment (autonomy, time management, communication, teamwork)",
+    "Focus cards system with 6 prioritized learning cards (2 high, 2 medium, 2 low)",
+    "AI chat assistant (IAtrainer) for real-time learning support",
+    "Team Leader analytics dashboard with at-risk student detection",
+    "AI-generated executive reports for TL (per coder, clan, or cohort)",
+    "Activity progress tracking with evidence submission",
+    "Risk flagging system with low/medium/high severity levels",
+    "GitHub and Google OAuth social authentication",
+    "Hybrid architecture: Node.js API Gateway + Python/FastAPI AI microservice"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/login",
+    "POST /api/auth/logout",
+    "GET  /api/coder/dashboard",
+    "POST /api/coder/onboarding",
+    "GET  /api/tl/dashboard",
+    "GET  /api/tl/risk-flags",
+    "POST /api/ia/generate-plan",
+    "POST /api/notifications/mark-read",
+    "POST /generate-plan",
+    "POST /generate-focus-cards",
+    "POST /chat/ask",
+    "POST /generate-report",
+    "POST /generate-exercise",
+    "POST /exercise/{id}/submit",
+    "POST /search-resources",
+    "GET  /health"
+  ]
+}
