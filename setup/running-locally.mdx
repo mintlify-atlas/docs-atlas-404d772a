@@ -1,0 +1,215 @@
+---
+title: "Running locally"
+description: "Start all three Kairo services for local development."
+---
+
+Running Kairo locally requires **three separate terminal windows** — one for each service. They must all be running at the same time for the platform to function.
+
+---
+
+## Port reference
+
+| Service | Port | URL |
+|---|---|---|
+| Node.js API gateway | `3000` | `http://localhost:3000` |
+| Python AI microservice | `8000` | `http://localhost:8000` |
+| Frontend | `5500` | `http://127.0.0.1:5500/frontend` |
+
+---
+
+## Three-terminal setup
+
+<Steps>
+
+<Step title="Terminal A — Node.js API gateway">
+
+This is the system orchestrator. Start it first so the session store and database connection are ready before the frontend makes any requests.
+
+```bash
+cd backend-node
+npm install   # only needed the first time
+npm run dev
+```
+
+Successful startup looks like:
+
+```
+------------------------------------------------------------
+🚀 KAIRO API GATEWAY STARTED SUCCESSFULLY
+------------------------------------------------------------
+📡 URL      : http://localhost:3000
+🌐 Origins  : http://127.0.0.1:5500/frontend
+🛠️  ENV      : development
+------------------------------------------------------------
+```
+
+If the process exits immediately, check that `DATABASE_URL` in `backend-node/.env` is correct and that your Supabase project is active.
+
+</Step>
+
+<Step title="Terminal B — Python AI microservice">
+
+This is the AI brain. Activate your virtual environment first, then start Uvicorn.
+
+<Tabs>
+
+<Tab title="Linux">
+
+```bash
+cd backend-python
+python3 -m venv env        # only needed the first time
+source env/bin/activate
+pip install -r requirements.txt  # only needed the first time
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+</Tab>
+
+<Tab title="macOS">
+
+```bash
+cd backend-python
+python3 -m venv env        # only needed the first time
+source env/bin/activate
+pip install -r requirements.txt  # only needed the first time
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+</Tab>
+
+<Tab title="Windows">
+
+```powershell
+cd backend-python
+python -m venv env         # only needed the first time
+env\Scripts\Activate.ps1
+pip install -r requirements.txt  # only needed the first time
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+</Tab>
+
+</Tabs>
+
+Successful startup logs include:
+
+```
+INFO: Supabase client initialized
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+```
+
+The startup banner also logs the LLM model name, embedding model status, and allowed CORS origins:
+
+```
+INFO  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INFO    Kairo AI Service v2.3.0  |  starting up
+INFO  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INFO    LLM model    : llama-3.3-70b-versatile
+INFO    Embeddings   : ✓ all-MiniLM-L6-v2 (384d)
+INFO    Environment  : development
+INFO    CORS origins : ['http://localhost:3000', ...]
+```
+
+Verify the service is reachable:
+
+```bash
+curl http://localhost:8000/health
+```
+
+</Step>
+
+<Step title="Terminal C — Frontend">
+
+Serve the `frontend/` directory on port 5500. This must match the `FRONTEND_URL` value in `backend-node/.env`.
+
+**Option 1 — VS Code Live Server (recommended):**
+
+1. Install the [Live Server](https://marketplace.visualstudio.com/items?itemName=ritwickdey.LiveServer) extension.
+2. Open the repository root in VS Code.
+3. Click **Go Live** in the status bar. Live Server starts on port 5500 by default.
+4. Open `http://127.0.0.1:5500/frontend` in your browser.
+
+**Option 2 — npx serve:**
+
+```bash
+npx serve -p 5500
+```
+
+Then open `http://localhost:5500/frontend`.
+
+<Note>
+If you change the port or path that the frontend is served from, update `FRONTEND_URL` in `backend-node/.env` and restart the Node.js server. The Python backend reads `FRONTEND_URL` for its CORS list too, so update `backend-python/.env` as well.
+</Note>
+
+</Step>
+
+</Steps>
+
+---
+
+## Verify everything is running
+
+With all three terminals active, run these checks:
+
+```bash
+# Node.js gateway
+curl http://localhost:3000/api/health
+# Expected: {"status":"active","uptime":...,"database":{"connected":true,...}}
+
+# Python AI microservice
+curl http://localhost:8000/health
+# Expected: {"status":"online","service":"Kairo AI Engine",...}
+```
+
+Open `http://127.0.0.1:5500/frontend` in your browser. You should see the Kairo login page.
+
+---
+
+## Common issues
+
+### CORS errors in the browser console
+
+**Symptom:** `Access to fetch at 'http://localhost:3000/...' from origin 'http://127.0.0.1:5500' has been blocked by CORS policy`
+
+**Cause:** The origin the browser is using does not match `FRONTEND_URL` in `backend-node/.env`.
+
+**Fix:**
+1. Check the exact URL in your browser's address bar (note whether it's `127.0.0.1` or `localhost`, and whether a path like `/frontend` is included).
+2. Update `FRONTEND_URL` in `backend-node/.env` to match that exact origin.
+3. Restart the Node.js server with `npm run dev`.
+
+Example: if your browser shows `http://127.0.0.1:5500/frontend`, set:
+```env
+FRONTEND_URL=http://127.0.0.1:5500/frontend
+```
+
+### Node.js exits immediately on startup
+
+**Symptom:** The process prints `FAILED` and exits after `🔄 Initializing Kairo services...`
+
+**Cause:** Cannot connect to the PostgreSQL database.
+
+**Fix:**
+1. Confirm your Supabase project is not paused (free-tier projects pause after one week of inactivity).
+2. Verify `DATABASE_URL` in `backend-node/.env` is the correct connection string.
+3. Check that `DB_USER`, `DB_PASSWORD`, and `DB_HOST` are consistent with your Supabase project settings.
+
+### Python: `Supabase client initialized` never appears
+
+**Symptom:** Uvicorn starts but the Supabase initialization log line is missing or an error is shown.
+
+**Cause:** `SUPABASE_URL` or `SUPABASE_SERVICE_KEY` in `backend-python/.env` is incorrect.
+
+**Fix:** Copy the service-role key from **Supabase → Settings → API → service_role** and confirm the project URL matches the one in `backend-node/.env`.
+
+### `pip install` fails on `uvloop`
+
+**Symptom:** `ERROR: Could not build wheels for uvloop` on Windows.
+
+**Fix:** `uvloop` is not supported on Windows. Remove it from `requirements.txt` before running `pip install`:
+
+```bash
+pip install -r requirements.txt --ignore-requires-python
+```
+
+Or comment out the `uvloop` line in `requirements.txt` for local Windows development.

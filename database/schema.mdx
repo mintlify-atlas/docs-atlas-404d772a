@@ -1,0 +1,494 @@
+---
+title: "Schema reference"
+description: "Complete table definitions for all 14 Kairo database tables."
+---
+
+All tables are defined in `schema.sql`. Every table has RLS enabled — see [Row Level Security](/database/rls-policies) for the access policies that govern each one.
+
+<Note>
+Column types follow PostgreSQL 14+ conventions. `SERIAL` columns auto-increment. `JSONB` columns accept any valid JSON. All `TIMESTAMP` values are stored without timezone; treat them as UTC.
+</Note>
+
+---
+
+### `users`
+
+All platform users — both Coders and Team Leaders. Role is enforced by the `role_enum` type.
+
+```sql
+CREATE TABLE users (
+  id          SERIAL PRIMARY KEY,
+  email       VARCHAR(100) UNIQUE NOT NULL,
+  password    VARCHAR(255) NOT NULL,
+  full_name   VARCHAR(150) NOT NULL,
+  role        role_enum NOT NULL,
+  clan_id     VARCHAR(50),
+  first_login BOOLEAN DEFAULT TRUE,
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_users_email   ON users(email);
+CREATE INDEX idx_users_role    ON users(role);
+CREATE INDEX idx_users_clan_id ON users(clan_id);
+
+COMMENT ON TABLE users IS 'Todos los usuarios del sistema (coders y team leaders)';
+COMMENT ON COLUMN users.clan_id IS 'Clan del coder: Turing, Tesla, McCarthy.';
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | Auto-incrementing user ID |
+| `email` | `VARCHAR(100)` | UNIQUE NOT NULL | Login email address |
+| `password` | `VARCHAR(255)` | NOT NULL | bcrypt-hashed password |
+| `full_name` | `VARCHAR(150)` | NOT NULL | Display name |
+| `role` | `role_enum` | NOT NULL | `coder` or `tl` |
+| `clan_id` | `VARCHAR(50)` | nullable | Clan name: `Turing`, `Tesla`, `McCarthy` |
+| `first_login` | `BOOLEAN` | DEFAULT TRUE | Drives onboarding flow; set to `false` after completion |
+| `created_at` | `TIMESTAMP` | DEFAULT NOW | Account creation time |
+
+---
+
+### `soft_skills_assessment`
+
+One-to-one table storing a coder's initial onboarding assessment results. Each skill is scored 1–5.
+
+```sql
+CREATE TABLE soft_skills_assessment (
+  id               SERIAL PRIMARY KEY,
+  coder_id         INT NOT NULL UNIQUE,
+  autonomy         INT NOT NULL CHECK (autonomy BETWEEN 1 AND 5),
+  time_management  INT NOT NULL CHECK (time_management BETWEEN 1 AND 5),
+  problem_solving  INT NOT NULL CHECK (problem_solving BETWEEN 1 AND 5),
+  communication    INT NOT NULL CHECK (communication BETWEEN 1 AND 5),
+  teamwork         INT NOT NULL CHECK (teamwork BETWEEN 1 AND 5),
+  learning_style   learning_style_enum NOT NULL,
+  raw_answers      JSONB,
+  assessed_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (coder_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_soft_skills_coder ON soft_skills_assessment(coder_id);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | NOT NULL UNIQUE, FK → `users(id)` CASCADE | One record per coder |
+| `autonomy` | `INT` | CHECK 1–5 | Self-directed learning score |
+| `time_management` | `INT` | CHECK 1–5 | Time management score |
+| `problem_solving` | `INT` | CHECK 1–5 | Problem-solving score |
+| `communication` | `INT` | CHECK 1–5 | Communication score |
+| `teamwork` | `INT` | CHECK 1–5 | Teamwork score |
+| `learning_style` | `learning_style_enum` | NOT NULL | Dominant learning style |
+| `raw_answers` | `JSONB` | nullable | Full onboarding answer array `[{questionId, optionId, score}]` for audit |
+| `assessed_at` | `TIMESTAMP` | DEFAULT NOW | When the assessment was completed |
+
+---
+
+### `modules`
+
+Bootcamp course modules. Each module has a fixed number of weeks.
+
+```sql
+CREATE TABLE modules (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(100) NOT NULL,
+  description TEXT,
+  total_weeks INT NOT NULL,
+  created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `name` | `VARCHAR(100)` | NOT NULL | Module name, e.g. `JavaScript` |
+| `description` | `TEXT` | nullable | Long-form module description |
+| `total_weeks` | `INT` | NOT NULL | Duration in weeks |
+| `created_at` | `TIMESTAMP` | DEFAULT NOW | |
+
+---
+
+### `moodle_progress`
+
+Tracks each coder's academic progress within a module, synced from Moodle. One row per (coder, module) pair.
+
+```sql
+CREATE TABLE moodle_progress (
+  id                SERIAL PRIMARY KEY,
+  coder_id          INT NOT NULL,
+  module_id         INT NOT NULL,
+  current_week      INT NOT NULL,
+  weeks_completed   JSONB DEFAULT '[]'::jsonb,
+  struggling_topics TEXT[] DEFAULT '{}',
+  average_score     DECIMAL(5,2) DEFAULT 0,
+  updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (coder_id, module_id),
+  FOREIGN KEY (coder_id)  REFERENCES users(id)    ON DELETE CASCADE,
+  FOREIGN KEY (module_id) REFERENCES modules(id)  ON DELETE CASCADE
+);
+
+CREATE INDEX idx_moodle_coder ON moodle_progress(coder_id);
+CREATE INDEX idx_moodle_score ON moodle_progress(average_score);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | |
+| `module_id` | `INT` | NOT NULL, FK → `modules(id)` CASCADE | |
+| `current_week` | `INT` | NOT NULL | Week number currently in progress |
+| `weeks_completed` | `JSONB` | DEFAULT `[]` | Array of completed week numbers, e.g. `[1, 2]` |
+| `struggling_topics` | `TEXT[]` | DEFAULT `{}` | Free-text array of topic names where the coder is struggling |
+| `average_score` | `DECIMAL(5,2)` | DEFAULT 0 | Current module average (0–100) |
+| `updated_at` | `TIMESTAMP` | DEFAULT NOW | Last sync time |
+
+---
+
+### `topics`
+
+Individual topics within a module. Used to track specific areas of difficulty.
+
+```sql
+CREATE TABLE topics (
+  id        SERIAL PRIMARY KEY,
+  module_id INT NOT NULL,
+  name      VARCHAR(200) NOT NULL,
+  category  VARCHAR(100),
+  FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_topics_module   ON topics(module_id);
+CREATE INDEX idx_topics_category ON topics(category);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `module_id` | `INT` | NOT NULL, FK → `modules(id)` CASCADE | Parent module |
+| `name` | `VARCHAR(200)` | NOT NULL | Topic name, e.g. `Async/Await` |
+| `category` | `VARCHAR(100)` | nullable | Category label, e.g. `Avanzado`, `Funciones` |
+
+---
+
+### `coder_struggling_topics`
+
+Many-to-many join table recording which topics a coder has reported difficulty with.
+
+```sql
+CREATE TABLE coder_struggling_topics (
+  id          SERIAL PRIMARY KEY,
+  coder_id    INT NOT NULL,
+  topic_id    INT NOT NULL,
+  reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (coder_id, topic_id),
+  FOREIGN KEY (coder_id) REFERENCES users(id)   ON DELETE CASCADE,
+  FOREIGN KEY (topic_id) REFERENCES topics(id)  ON DELETE CASCADE
+);
+
+CREATE INDEX idx_struggling_coder ON coder_struggling_topics(coder_id);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | |
+| `topic_id` | `INT` | NOT NULL, FK → `topics(id)` CASCADE | |
+| `reported_at` | `TIMESTAMP` | DEFAULT NOW | When the coder flagged this topic |
+
+---
+
+### `complementary_plans`
+
+AI-generated personalized learning plans. Each active coder has up to 6 plans per module (the 6 Cards), ordered by `priority_level`.
+
+```sql
+CREATE TABLE complementary_plans (
+  id                    SERIAL PRIMARY KEY,
+  coder_id              INT NOT NULL,
+  module_id             INT NOT NULL,
+  plan_content          JSONB NOT NULL,
+  priority_level        priority_level_enum DEFAULT 'medium',
+  soft_skills_snapshot  JSONB,
+  moodle_status_snapshot JSONB,
+  is_active             BOOLEAN DEFAULT TRUE,
+  generated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (coder_id)  REFERENCES users(id)   ON DELETE CASCADE,
+  FOREIGN KEY (module_id) REFERENCES modules(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_plans_coder    ON complementary_plans(coder_id);
+CREATE INDEX idx_plans_active   ON complementary_plans(is_active);
+CREATE INDEX idx_plans_priority ON complementary_plans(priority_level);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | Coder this plan belongs to |
+| `module_id` | `INT` | NOT NULL, FK → `modules(id)` CASCADE | Module this plan addresses |
+| `plan_content` | `JSONB` | NOT NULL | Full AI-generated plan body |
+| `priority_level` | `priority_level_enum` | DEFAULT `medium` | `high`, `medium`, or `low` — determines card order |
+| `soft_skills_snapshot` | `JSONB` | nullable | Copy of the coder's soft-skills scores at generation time |
+| `moodle_status_snapshot` | `JSONB` | nullable | Copy of the coder's Moodle progress at generation time |
+| `is_active` | `BOOLEAN` | DEFAULT TRUE | `false` means the plan has been superseded |
+| `generated_at` | `TIMESTAMP` | DEFAULT NOW | When the AI generated this plan |
+
+<Note>
+The AI always generates exactly 6 plans per run: 2 with `priority_level = 'high'`, 2 with `'medium'`, and 2 with `'low'`. Query with `ORDER BY priority_level DESC` to get the correct display order.
+</Note>
+
+---
+
+### `plan_activities`
+
+Individual daily activities within a complementary plan. Deleted automatically when the parent plan is deleted.
+
+```sql
+CREATE TABLE plan_activities (
+  id                     SERIAL PRIMARY KEY,
+  plan_id                INT NOT NULL,
+  day_number             INT NOT NULL,
+  title                  VARCHAR(200) NOT NULL,
+  description            TEXT,
+  estimated_time_minutes INT,
+  activity_type          activity_type_enum,
+  skill_focus            VARCHAR(100),
+  FOREIGN KEY (plan_id) REFERENCES complementary_plans(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_activities_plan ON plan_activities(plan_id);
+CREATE INDEX idx_activities_day  ON plan_activities(day_number);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `plan_id` | `INT` | NOT NULL, FK → `complementary_plans(id)` CASCADE | Parent plan |
+| `day_number` | `INT` | NOT NULL | Day within the plan (1-based) |
+| `title` | `VARCHAR(200)` | NOT NULL | Activity title |
+| `description` | `TEXT` | nullable | Detailed instructions |
+| `estimated_time_minutes` | `INT` | nullable | Suggested time to complete |
+| `activity_type` | `activity_type_enum` | nullable | `guided`, `semi_guided`, or `autonomous` |
+| `skill_focus` | `VARCHAR(100)` | nullable | The specific skill this activity targets |
+
+---
+
+### `activity_progress`
+
+Tracks which activities each coder has completed. One row per (activity, coder) pair.
+
+```sql
+CREATE TABLE activity_progress (
+  id                  SERIAL PRIMARY KEY,
+  activity_id         INT NOT NULL,
+  coder_id            INT NOT NULL,
+  completed           BOOLEAN DEFAULT FALSE,
+  reflection_text     TEXT,
+  time_spent_minutes  INT,
+  completed_at        TIMESTAMP NULL,
+  UNIQUE (activity_id, coder_id),
+  FOREIGN KEY (activity_id) REFERENCES plan_activities(id) ON DELETE CASCADE,
+  FOREIGN KEY (coder_id)    REFERENCES users(id)           ON DELETE CASCADE
+);
+
+CREATE INDEX idx_progress_activity  ON activity_progress(activity_id);
+CREATE INDEX idx_progress_coder     ON activity_progress(coder_id);
+CREATE INDEX idx_progress_completed ON activity_progress(completed);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `activity_id` | `INT` | NOT NULL, FK → `plan_activities(id)` CASCADE | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | |
+| `completed` | `BOOLEAN` | DEFAULT FALSE | Whether the coder has marked this activity done |
+| `reflection_text` | `TEXT` | nullable | Optional coder reflection on the activity |
+| `time_spent_minutes` | `INT` | nullable | Actual time spent |
+| `completed_at` | `TIMESTAMP` | nullable | Timestamp when `completed` was set to `true` |
+
+---
+
+### `evidence_submissions`
+
+Files and links uploaded by coders as evidence of completing an activity.
+
+```sql
+CREATE TABLE evidence_submissions (
+  id           SERIAL PRIMARY KEY,
+  activity_id  INT NOT NULL,
+  coder_id     INT NOT NULL,
+  file_url     TEXT,
+  link_url     TEXT,
+  description  TEXT,
+  submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (activity_id) REFERENCES plan_activities(id) ON DELETE CASCADE,
+  FOREIGN KEY (coder_id)    REFERENCES users(id)           ON DELETE CASCADE
+);
+
+CREATE INDEX idx_evidence_activity ON evidence_submissions(activity_id);
+CREATE INDEX idx_evidence_coder    ON evidence_submissions(coder_id);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `activity_id` | `INT` | NOT NULL, FK → `plan_activities(id)` CASCADE | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | |
+| `file_url` | `TEXT` | nullable | URL of an uploaded file (Supabase Storage or external) |
+| `link_url` | `TEXT` | nullable | URL of an external resource (GitHub repo, deployed app, etc.) |
+| `description` | `TEXT` | nullable | Free-text description of the evidence |
+| `submitted_at` | `TIMESTAMP` | DEFAULT NOW | |
+
+---
+
+### `tl_feedback`
+
+Messages sent by a Team Leader to a coder. The `is_read` flag drives the notification bell indicator.
+
+```sql
+CREATE TABLE tl_feedback (
+  id            SERIAL PRIMARY KEY,
+  coder_id      INT NOT NULL,
+  tl_id         INT NOT NULL,
+  plan_id       INT,
+  feedback_text TEXT NOT NULL,
+  feedback_type feedback_type_enum,
+  is_read       BOOLEAN DEFAULT FALSE,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (coder_id) REFERENCES users(id)               ON DELETE CASCADE,
+  FOREIGN KEY (tl_id)    REFERENCES users(id)               ON DELETE CASCADE,
+  FOREIGN KEY (plan_id)  REFERENCES complementary_plans(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_feedback_coder        ON tl_feedback(coder_id);
+CREATE INDEX idx_feedback_tl           ON tl_feedback(tl_id);
+CREATE INDEX idx_feedback_is_read      ON tl_feedback(is_read);
+CREATE INDEX idx_feedback_coder_unread ON tl_feedback(coder_id, is_read);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | Recipient coder |
+| `tl_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | Sending Team Leader |
+| `plan_id` | `INT` | nullable, FK → `complementary_plans(id)` SET NULL | Optional: feedback tied to a specific plan |
+| `feedback_text` | `TEXT` | NOT NULL | Message body |
+| `feedback_type` | `feedback_type_enum` | nullable | `weekly`, `activity`, or `general` |
+| `is_read` | `BOOLEAN` | DEFAULT FALSE | `false` = red dot on notification bell; `true` = dismissed |
+| `created_at` | `TIMESTAMP` | DEFAULT NOW | |
+
+<Note>
+`plan_id` uses `ON DELETE SET NULL` rather than CASCADE. Deleting a plan does not remove the feedback message — it simply unlinks `plan_id` to `NULL`.
+</Note>
+
+---
+
+### `risk_flags`
+
+Auto-detected or manually created risk alerts for coders.
+
+```sql
+CREATE TABLE risk_flags (
+  id            SERIAL PRIMARY KEY,
+  coder_id      INT NOT NULL,
+  risk_level    risk_level_enum NOT NULL,
+  reason        TEXT NOT NULL,
+  auto_detected BOOLEAN DEFAULT TRUE,
+  detected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  resolved      BOOLEAN DEFAULT FALSE,
+  resolved_at   TIMESTAMP NULL,
+  FOREIGN KEY (coder_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_risk_coder    ON risk_flags(coder_id);
+CREATE INDEX idx_risk_level    ON risk_flags(risk_level);
+CREATE INDEX idx_risk_resolved ON risk_flags(resolved);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | NOT NULL, FK → `users(id)` CASCADE | Coder at risk |
+| `risk_level` | `risk_level_enum` | NOT NULL | `low`, `medium`, or `high` |
+| `reason` | `TEXT` | NOT NULL | Human-readable explanation of the risk signal |
+| `auto_detected` | `BOOLEAN` | DEFAULT TRUE | `true` = flagged by AI; `false` = raised manually by a TL |
+| `detected_at` | `TIMESTAMP` | DEFAULT NOW | |
+| `resolved` | `BOOLEAN` | DEFAULT FALSE | `true` once the TL marks the alert as resolved |
+| `resolved_at` | `TIMESTAMP` | nullable | Timestamp when the flag was resolved |
+
+---
+
+### `ai_reports`
+
+Executive reports generated by the AI for Team Leaders. A report can target a single coder, a clan, or a full cohort.
+
+```sql
+CREATE TABLE ai_reports (
+  id              SERIAL PRIMARY KEY,
+  target_type     report_target_enum NOT NULL,
+  target_id       INT NOT NULL,
+  summary_text    TEXT NOT NULL,
+  risk_level      risk_level_enum,
+  recommendations TEXT,
+  generated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  viewed_by_tl    BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX idx_reports_target ON ai_reports(target_type, target_id);
+CREATE INDEX idx_reports_viewed ON ai_reports(viewed_by_tl);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `target_type` | `report_target_enum` | NOT NULL | `coder`, `clan`, or `cohort` |
+| `target_id` | `INT` | NOT NULL | ID of the target (coder ID, clan numeric ID, etc.) |
+| `summary_text` | `TEXT` | NOT NULL | AI-generated executive summary |
+| `risk_level` | `risk_level_enum` | nullable | Overall risk level for the target |
+| `recommendations` | `TEXT` | nullable | AI-generated action recommendations |
+| `generated_at` | `TIMESTAMP` | DEFAULT NOW | |
+| `viewed_by_tl` | `BOOLEAN` | DEFAULT FALSE | Whether the TL has opened the report |
+
+---
+
+### `ai_generation_log`
+
+Full audit trail of every AI call made by the platform. Stores both input and output payloads.
+
+```sql
+CREATE TABLE ai_generation_log (
+  id                SERIAL PRIMARY KEY,
+  coder_id          INT,
+  agent_type        ai_agent_enum NOT NULL,
+  input_payload     JSONB NOT NULL,
+  output_payload    JSONB NOT NULL,
+  model_name        VARCHAR(100),
+  execution_time_ms INT,
+  success           BOOLEAN DEFAULT TRUE,
+  error_message     TEXT,
+  generated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (coder_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX idx_log_agent ON ai_generation_log(agent_type);
+CREATE INDEX idx_log_coder ON ai_generation_log(coder_id);
+CREATE INDEX idx_log_date  ON ai_generation_log(generated_at);
+```
+
+| Column | Type | Constraints | Description |
+|---|---|---|---|
+| `id` | `SERIAL` | PRIMARY KEY | |
+| `coder_id` | `INT` | nullable, FK → `users(id)` SET NULL | The coder this call was made for (if applicable) |
+| `agent_type` | `ai_agent_enum` | NOT NULL | Which AI agent made the call |
+| `input_payload` | `JSONB` | NOT NULL | Full input sent to the AI model |
+| `output_payload` | `JSONB` | NOT NULL | Full response received from the AI model |
+| `model_name` | `VARCHAR(100)` | nullable | Model identifier, e.g. `llama-3.3-70b-versatile` |
+| `execution_time_ms` | `INT` | nullable | Total latency in milliseconds |
+| `success` | `BOOLEAN` | DEFAULT TRUE | `false` if the AI call failed |
+| `error_message` | `TEXT` | nullable | Error details when `success = false` |
+| `generated_at` | `TIMESTAMP` | DEFAULT NOW | |
+
+<Note>
+`coder_id` uses `ON DELETE SET NULL`. Log rows are preserved even if the coder's account is deleted, maintaining a complete audit history.
+</Note>

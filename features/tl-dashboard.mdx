@@ -1,0 +1,104 @@
+---
+title: "Team Leader dashboard"
+description: "Monitor your entire cohort's progress and health from the TL dashboard."
+---
+
+The TL dashboard is your command center. Every time you open it, Kairo loads all Coders in your clan, their current Kairo scores, risk status, soft skill averages, exercise submissions, and learning style distribution — all in one view.
+
+## Dashboard layout
+
+The dashboard is divided into four areas:
+
+<CardGroup cols={2}>
+  <Card title="Stats row" icon="chart-bar">
+    Five summary metrics across the top: total Coders, onboarding complete, onboarding pending, Coders at risk, and clan average Kairo score.
+  </Card>
+  <Card title="Soft skills & learning styles" icon="brain">
+    Two charts side by side — a bar overview of the clan's average scores for autonomy, time management, problem solving, communication, and teamwork (rated 1–5), and a pie chart showing the distribution of learning styles (visual, auditory, kinesthetic, mixed).
+  </Card>
+  <Card title="Coders table" icon="table">
+    A scrollable table listing every Coder in your clan with their name, Kairo score, current week, learning style, and risk status badge.
+  </Card>
+  <Card title="Coder detail panel" icon="user">
+    A side panel that opens when you click a row in the Coders table. Shows the selected Coder's full profile, skill bars, and a feedback form.
+  </Card>
+</CardGroup>
+
+Below those areas, the dashboard also shows:
+
+- **Exercise submissions** — all code submissions from your clan, newest first, with a review modal to leave feedback.
+- **Ranking** — your clan's Kairo score leaderboard alongside the global top 10.
+
+## Summary metrics
+
+The five stat cards at the top of the dashboard update every time the page loads:
+
+| Metric | What it shows |
+|--------|---------------|
+| Coders en el clan | Total number of Coders assigned to your clan |
+| Onboarding completo | Coders who have completed the first-login diagnostic (`first_login = false`) |
+| Pendientes | Coders who have not yet completed onboarding |
+| En riesgo | Coders with an unresolved `risk_flags` entry at `high` or `critical` level |
+| Score promedio | Average `kairo_score` across all Coders in your clan |
+
+<Info>
+  The risk count in the stats row matches the red badge that appears in the top-right topbar. Both reflect only **unresolved** risk flags (`resolved = false`).
+</Info>
+
+## Coders table and filtering
+
+The Coders table loads all members of your clan sorted alphabetically. Use the three filter chips above the table to narrow the list:
+
+- **Todos** — shows all Coders (default)
+- **En riesgo** — shows only Coders with an active unresolved risk flag
+- **Pendientes** — shows only Coders who have not completed onboarding
+
+Each row displays the Coder's name, their current Kairo score, the bootcamp week they are on, their learning style, and a coloured status badge (`low`, `medium`, or `high` risk).
+
+## Viewing a Coder's detail
+
+Click any row in the Coders table to open that Coder's detail panel on the right.
+
+The panel shows:
+
+- **Name, clan, and email**
+- **Current week** in the bootcamp
+- **Kairo score** (numeric)
+- **Learning style** badge
+- **Skill bars** for all five soft skill dimensions scored 1–5
+- **Risk badge** if the Coder has an active unresolved flag
+- **Feedback form** to send feedback directly from this panel (see [Feedback](/features/feedback))
+
+## Reviewing exercise submissions
+
+The **Ejercicios enviados por el clan** section below the main grid lists the 50 most recent code submissions from your clan. Each submission card shows the Coder's name, exercise title, language, difficulty, and submission time.
+
+Click a submission card to open the review modal:
+
+<Steps>
+  <Step title="Read the submitted code">
+    The modal displays the Coder's code in a read-only textarea, the exercise language badge, and the expected output for the exercise.
+  </Step>
+  <Step title="Write your feedback">
+    Type your feedback in the input field at the bottom of the modal. Be specific — the Coder sees your exact text.
+  </Step>
+  <Step title="Send feedback">
+    Click **Enviar feedback**. Kairo saves your feedback to `exercise_submissions.tl_feedback_text`, records `reviewed_at` and `reviewed_by`, awards the Coder **+15 Kairo points**, and sends them a real-time notification.
+  </Step>
+</Steps>
+
+<Note>
+  Once you send feedback on a submission, the modal switches to a **Feedback enviado** state showing your submitted text. You cannot overwrite it from the UI.
+</Note>
+
+## Navigation
+
+The sidebar and bottom nav bar (on mobile) give you access to the three main TL views:
+
+| Link | Destination |
+|------|-------------|
+| **Dashboard** | This overview page |
+| **Actividades** | Assignment and resource management — see [assignment.html](/features/tl-dashboard) |
+| **Grupos** | Group analytics and clan management |
+
+Your profile link in the top-right corner navigates to `profile.html`.

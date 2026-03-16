@@ -1,0 +1,139 @@
+---
+title: "Social login"
+description: "Sign in with GitHub or Google using OAuth 2.0."
+---
+
+Kairo supports social login via GitHub and Google. Both providers use the OAuth 2.0 authorization code flow implemented with [Passport.js](https://www.passportjs.org/). You can use social login on both the registration page and the login page.
+
+## Supported providers
+
+<CardGroup cols={2}>
+  <Card title="GitHub" icon="github">
+    Implemented with `passport-github2`. Requests the `user:email` scope to retrieve your primary email address.
+  </Card>
+  <Card title="Google" icon="google">
+    Implemented with `passport-google-oauth20`. Requests `profile` and `email` scopes. The `prompt: 'select_account'` option forces the account chooser on every login.
+  </Card>
+</CardGroup>
+
+## The OAuth flow
+
+<Steps>
+  <Step title="Click a social login button">
+    On the login or register page, click **Continua con Google** or **Continua con GitHub**. The frontend redirects to the corresponding Kairo API route:
+    - Google: `GET /api/auth/google`
+    - GitHub: `GET /api/auth/github`
+  </Step>
+  <Step title="Provider redirect">
+    Passport redirects your browser to the provider's authorization page (accounts.google.com or github.com/login/oauth/authorize). You approve the requested permissions.
+  </Step>
+  <Step title="Callback">
+    The provider redirects back to Kairo's callback URL:
+    - Google: `GET /api/auth/google/callback`
+    - GitHub: `GET /api/auth/github/callback`
+
+    Passport validates the authorization code and exchanges it for an access token.
+  </Step>
+  <Step title="Account lookup or creation">
+    Kairo looks up your email in the `users` table. If no account exists, `createOAuth` inserts a new row with `password = 'oauth_<provider>'`, `otp_verified = false`, and `first_login = true`. If an account already exists, the existing record is used.
+  </Step>
+  <Step title="Session creation">
+    `socialAuthSuccess` is called. It sets `req.session.userId`, saves the session to PostgreSQL, and sets `otp_verified = true` on your user record (social login bypasses the email OTP requirement).
+  </Step>
+  <Step title="Role-based redirect">
+    If `first_login = true`, you are sent to the Coder onboarding screen. Otherwise you land on your dashboard (Coder or TL depending on your `role`).
+  </Step>
+</Steps>
+
+<Info>
+  Social login accounts do not have a usable password. Attempting to log in with email and password using a social account returns `401 Invalid credentials` because the stored password starts with `oauth_`.
+</Info>
+
+## Required environment variables
+
+Both OAuth strategies are disabled if their environment variables are missing. Configure the following before deploying:
+
+```bash
+# GitHub OAuth
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
+
+# Google OAuth
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+
+# Base URL used to build callback URLs
+FRONTEND_URL=https://your-deployed-domain.com
+```
+
+<Warning>
+  If `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is missing at startup, Kairo logs a warning and **disables GitHub login entirely**. The same applies to Google. Users who attempt to use a disabled provider see the provider's failure redirect page.
+</Warning>
+
+## Setting up GitHub OAuth
+
+<Steps>
+  <Step title="Create a GitHub OAuth App">
+    Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**.
+  </Step>
+  <Step title="Fill in the application details">
+    Set **Application name** to `Kairo` (or your preferred label). Set **Homepage URL** to your deployment URL.
+  </Step>
+  <Step title="Set the callback URL">
+    Set **Authorization callback URL** to:
+    ```
+    https://your-deployed-domain.com/api/auth/github/callback
+    ```
+    For local development use:
+    ```
+    http://localhost:3000/api/auth/github/callback
+    ```
+  </Step>
+  <Step title="Copy credentials">
+    After creating the app, copy the **Client ID** and generate a **Client secret**. Add both to your environment as `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+  </Step>
+</Steps>
+
+## Setting up Google OAuth
+
+<Steps>
+  <Step title="Open Google Cloud Console">
+    Navigate to [console.cloud.google.com](https://console.cloud.google.com), select or create a project, and go to **APIs & Services → Credentials**.
+  </Step>
+  <Step title="Create OAuth 2.0 credentials">
+    Click **Create Credentials → OAuth client ID**. Choose **Web application** as the application type.
+  </Step>
+  <Step title="Add the callback URL">
+    Under **Authorized redirect URIs**, add:
+    ```
+    https://your-deployed-domain.com/api/auth/google/callback
+    ```
+    For local development add:
+    ```
+    http://localhost:3000/api/auth/google/callback
+    ```
+  </Step>
+  <Step title="Copy credentials">
+    Download or copy the **Client ID** and **Client secret**. Add them to your environment as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+  </Step>
+  <Step title="Configure the OAuth consent screen">
+    Go to **APIs & Services → OAuth consent screen** and fill in the required app name, support email, and scopes (`profile`, `email`). Publish the app when you are ready for production users.
+  </Step>
+</Steps>
+
+## What happens on first social login
+
+When a user authenticates with a social provider for the first time and no matching email exists in `users`, Kairo calls `createOAuth` which inserts a new account with these defaults:
+
+| Field | Value |
+|-------|-------|
+| `email` | Primary email from the provider profile |
+| `full_name` | `displayName` from the provider, or `profile.username` (GitHub), or `'Riwi Coder'` as fallback |
+| `password` | `oauth_github` or `oauth_google` (sentinel value, not a real hash) |
+| `role` | `coder` (default — role assignment must be updated by an admin if the user is a TL) |
+| `first_login` | `true` — routes the new user to the onboarding diagnostic |
+| `otp_verified` | Set to `true` immediately by `socialAuthSuccess` — no email OTP required |
+
+<Note>
+  GitHub profiles without a public email return a fallback address of `github_<profile.id>@noreply.github.com`. This ensures the account can always be created, but it will not match any future email-based login attempts.
+</Note>

@@ -1,0 +1,251 @@
+---
+title: "Generate focus cards"
+description: "POST /generate-focus-cards — Generate 6 prioritized focus cards from a learning plan."
+---
+
+## Overview
+
+`POST /generate-focus-cards` generates exactly **6 focus cards** — 2 High / 2 Medium / 2 Low priority — personalized for a coder based on their soft-skills profile, the current module, and any topics they have been struggling with. Cards are displayed on the coder dashboard as quick-access study guides with theory, a practice task, and pro tips.
+
+<Warning>
+  This endpoint calls Groq with `max_tokens=2048`. Expect **3–8 seconds** of latency. Do not call it more than once per session; cache the response on the frontend.
+</Warning>
+
+---
+
+## Endpoint
+
+```
+POST /generate-focus-cards
+```
+
+---
+
+## Request body
+
+<ParamField body="coder_id" type="integer" required>
+  The coder's user ID. Used to fetch the soft-skills diagnostic (learning style, problem-solving score, autonomy score) from Supabase.
+</ParamField>
+
+<ParamField body="module_id" type="integer" required>
+  The active module ID. Used to fetch the module name and up to 8 topic names for context.
+</ParamField>
+
+<ParamField body="struggling_topics" type="array" default="[]">
+  List of topic name strings the coder has flagged as difficult. The two **High** priority cards are required to cover topics from this list. If empty, all cards are distributed across the module's general topics.
+
+  ```json
+  ["GROUP BY", "window functions"]
+  ```
+</ParamField>
+
+---
+
+## AI behavior
+
+<Note>
+  **Model**: `llama-3.3-70b-versatile` (configurable via `MODEL_NAME` env var), `temperature=0.7`, `max_tokens=2048`.
+
+  The prompt injects:
+  - The coder's `learning_style` (visual / kinesthetic / reading / auditory / mixed) — used to adapt the `theory` and `practice.description` tone
+  - `problem_solving` and `autonomy` scores (1–5) — lower scores result in more guided practice steps
+  - The module's topic list (first 8 topics) and struggling topics
+
+  The model is instructed to return **only** valid JSON — no markdown, no backticks. If the response contains markdown fences, the router strips them before parsing.
+
+  The required distribution is **2 HIGH / 2 MEDIUM / 2 LOW** regardless of how many struggling topics are provided.
+</Note>
+
+---
+
+## Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/generate-focus-cards \
+  -H "Content-Type: application/json" \
+  -d '{
+    "coder_id": 42,
+    "module_id": 3,
+    "struggling_topics": ["GROUP BY", "window functions"]
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/generate-focus-cards",
+    json={
+        "coder_id": 42,
+        "module_id": 3,
+        "struggling_topics": ["GROUP BY", "window functions"],
+    },
+    timeout=20.0,
+)
+data = response.json()
+cards = data["data"]["cards"]
+```
+
+</CodeGroup>
+
+---
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  `true` when the cards were generated and parsed successfully.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  Wrapper object returned directly from the LLM.
+
+  <Expandable title="data fields">
+    <ResponseField name="cards" type="array">
+      Array of exactly 6 card objects.
+
+      <Expandable title="card object">
+        <ResponseField name="priority" type="string">
+          `"high"` | `"medium"` | `"low"`. Distribution is always 2 / 2 / 2.
+        </ResponseField>
+
+        <ResponseField name="topic" type="string">
+          The exact topic name from the module (e.g. `"GROUP BY"`).
+        </ResponseField>
+
+        <ResponseField name="title" type="string">
+          Actionable card title (e.g. `"Domina GROUP BY con agregaciones reales"`).
+        </ResponseField>
+
+        <ResponseField name="theory" type="string">
+          3–4 sentence explanation adapted to the coder's learning style.
+        </ResponseField>
+
+        <ResponseField name="practice" type="object">
+          A 20-minute hands-on practice task.
+
+          <Expandable title="practice fields">
+            <ResponseField name="description" type="string">
+              What the coder should do in 20 minutes.
+            </ResponseField>
+            <ResponseField name="example" type="string">
+              Code snippet or concrete step-by-step example.
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+
+        <ResponseField name="pro_tips" type="array">
+          Two concrete tips as strings.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Example response
+
+```json
+{
+  "success": true,
+  "data": {
+    "cards": [
+      {
+        "priority": "high",
+        "topic": "GROUP BY",
+        "title": "Domina GROUP BY con agregaciones reales",
+        "theory": "GROUP BY agrupa filas con el mismo valor en una columna para que puedas aplicar funciones como COUNT, SUM o AVG. Siempre aparece después del WHERE. Todas las columnas del SELECT que no sean funciones de agregación deben estar en el GROUP BY.",
+        "practice": {
+          "description": "Abre DB Fiddle, crea una tabla orders con columnas customer_id y amount, inserta 10 filas y escribe una query que muestre el total de ventas por cliente.",
+          "example": "SELECT customer_id, SUM(amount) AS total\nFROM orders\nGROUP BY customer_id\nORDER BY total DESC;"
+        },
+        "pro_tips": [
+          "Si ves 'column must appear in GROUP BY', agrégala al GROUP BY o envuélvela en una función de agregación.",
+          "Usa HAVING en lugar de WHERE para filtrar resultados agrupados."
+        ]
+      },
+      {
+        "priority": "high",
+        "topic": "window functions",
+        "title": "Window functions: calcula sin perder filas",
+        "theory": "A diferencia de GROUP BY, las window functions calculan sobre un conjunto de filas pero mantienen cada fila en el resultado. Se definen con OVER(). Son ideales para rankings, totales acumulados y comparaciones entre filas.",
+        "practice": {
+          "description": "Escribe una query que asigne un ranking de ventas por cliente dentro de cada región usando RANK() OVER(PARTITION BY region ORDER BY total DESC).",
+          "example": "SELECT customer_id, region, total,\n  RANK() OVER (PARTITION BY region ORDER BY total DESC) AS rank\nFROM sales;"
+        },
+        "pro_tips": [
+          "PARTITION BY divide el cálculo en grupos, como GROUP BY pero sin colapsar filas.",
+          "LAG() y LEAD() te permiten comparar una fila con la anterior o la siguiente."
+        ]
+      },
+      {
+        "priority": "medium",
+        "topic": "subqueries",
+        "title": "Subqueries: consultas dentro de consultas",
+        "theory": "Una subquery es una SELECT anidada dentro de otra. Puedes usarla en el WHERE, el FROM o el SELECT. Las subqueries correlacionadas se ejecutan una vez por fila de la consulta exterior.",
+        "practice": {
+          "description": "Escribe una query que devuelva los clientes cuyo total de compras supera el promedio general usando una subquery en el WHERE.",
+          "example": "SELECT customer_id FROM orders\nGROUP BY customer_id\nHAVING SUM(amount) > (SELECT AVG(amount) FROM orders);"
+        },
+        "pro_tips": [
+          "Cuando sea posible, reemplaza subqueries correlacionadas con JOINs para mejor rendimiento.",
+          "EXISTS es más eficiente que IN cuando la subquery devuelve muchos resultados."
+        ]
+      },
+      {
+        "priority": "medium",
+        "topic": "índices",
+        "title": "Índices: acelera tus consultas",
+        "theory": "Un índice permite a PostgreSQL localizar filas sin escanear la tabla completa. Los índices en columnas de WHERE, JOIN y ORDER BY mejoran drásticamente el rendimiento en tablas grandes.",
+        "practice": {
+          "description": "Crea un índice sobre la columna customer_id de la tabla orders y compara el plan de ejecución con EXPLAIN ANALYZE antes y después.",
+          "example": "CREATE INDEX idx_orders_customer ON orders(customer_id);\nEXPLAIN ANALYZE SELECT * FROM orders WHERE customer_id = 5;"
+        },
+        "pro_tips": [
+          "No indexar todo: los índices ralentizan los INSERT y UPDATE.",
+          "Los índices compuestos son útiles cuando filtras por múltiples columnas juntas."
+        ]
+      },
+      {
+        "priority": "low",
+        "topic": "transacciones",
+        "title": "Transacciones: operaciones atómicas",
+        "theory": "Una transacción agrupa varias operaciones en una unidad atómica: o todas tienen éxito (COMMIT) o ninguna se aplica (ROLLBACK). Son clave para mantener la integridad de los datos.",
+        "practice": {
+          "description": "Escribe un bloque BEGIN/COMMIT que inserte un pedido y actualice el stock en una sola transacción. Luego prueba forzar un ROLLBACK.",
+          "example": "BEGIN;\nINSERT INTO orders(customer_id, amount) VALUES (1, 150);\nUPDATE stock SET quantity = quantity - 1 WHERE product_id = 7;\nCOMMIT;"
+        },
+        "pro_tips": [
+          "Siempre usa transacciones cuando modificas más de una tabla relacionada.",
+          "SAVEPOINT te permite hacer un rollback parcial dentro de una transacción."
+        ]
+      },
+      {
+        "priority": "low",
+        "topic": "normalización",
+        "title": "Normalización: diseña sin redundancia",
+        "theory": "Normalizar es organizar las tablas para eliminar datos duplicados y dependencias inadecuadas. Las tres primeras formas normales (1FN, 2FN, 3FN) cubren la mayoría de los casos de diseño en un bootcamp.",
+        "practice": {
+          "description": "Toma una tabla desnormalizada con columnas repetidas y divídela en 2 tablas relacionadas con una clave foránea.",
+          "example": "-- Desnormalizado:\n-- orders(id, customer_name, customer_email, amount)\n-- Normalizado:\n-- customers(id, name, email)\n-- orders(id, customer_id, amount)"
+        },
+        "pro_tips": [
+          "Si estás repitiendo el nombre de un cliente en cada fila de orders, es señal de que falta una tabla customers.",
+          "Desnormalizar es válido en tablas de reportes de alto rendimiento, pero no en el modelo principal."
+        ]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Errors
+
+| HTTP status | Condition |
+|---|---|
+| `500` | Groq returned invalid JSON (after stripping markdown fences) |
+| `500` | Any other Groq API or network error |

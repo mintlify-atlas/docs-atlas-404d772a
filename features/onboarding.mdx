@@ -1,0 +1,108 @@
+---
+title: "Onboarding"
+description: "How Coders complete their first-login onboarding and soft skills assessment."
+---
+
+The first time you log in to Kairo, the platform detects that your `first_login` flag is `true` and redirects you to the **Diagnóstico** screen before you can access your dashboard. This one-time assessment takes 5–8 minutes and shapes every plan Kairo generates for you.
+
+<Info>
+  You only complete the diagnostic once. You can update your profile from **Settings** at any time if your learning style changes.
+</Info>
+
+## How the diagnostic works
+
+The assessment consists of **30 questions** organized into 7 blocks. Each block explores a distinct dimension of how you learn:
+
+<AccordionGroup>
+  <Accordion title="B1 — Sensory channels">
+    Do you learn better by seeing diagrams, listening, reading text, or practicing hands-on? These questions map your primary input channel.
+  </Accordion>
+  <Accordion title="B2 — Active vs. Reflective">
+    Do you dive in immediately or prefer to think before acting? This dimension measures your processing speed preference.
+  </Accordion>
+  <Accordion title="B3 — Concrete vs. Intuitive">
+    Are you drawn to real-world examples or abstract ideas? This determines how the AI frames explanations for you.
+  </Accordion>
+  <Accordion title="B4 — Sequential vs. Global">
+    Do you prefer step-by-step instruction or starting with the big picture? This controls the structure of your learning plan.
+  </Accordion>
+  <Accordion title="B5 — Visual vs. Verbal">
+    Does a diagram work better for you than a written description? This influences the format of activities in your plan.
+  </Accordion>
+  <Accordion title="B6 — Learning cycle">
+    How do you process what you learn — by experiencing, observing, analyzing, or experimenting? Based on Kolb's model.
+  </Accordion>
+  <Accordion title="B7 — Integrative profile">
+    Final questions that cross all previous dimensions to build your complete learning profile.
+  </Accordion>
+</AccordionGroup>
+
+Kairo analyses your answers using three established frameworks — **VARK**, **Felder-Soloman**, and **Kolb** — to determine your learning style.
+
+## Answering questions
+
+Navigating the diagnostic is straightforward:
+
+- **Click** an option to select it. The next question appears automatically.
+- **Keyboard shortcuts** — press `A`, `B`, `C`, or `D` to select options without using the mouse.
+- **Back button** — use the `← Atrás` button at any time to change a previous answer.
+
+There are no right or wrong answers. Always choose your first instinct — the option that best reflects how you actually behave.
+
+A global progress bar at the top of the screen shows your position: block label (e.g., `B1`), current question number, and overall percentage.
+
+## What the assessment measures
+
+The diagnostic produces scores for **5 soft skill dimensions**, each rated from 1 to 5:
+
+| Dimension | What it captures |
+|-----------|------------------|
+| `autonomy` | How independently you work and self-direct your learning |
+| `time_management` | How effectively you plan and prioritize your study time |
+| `problem_solving` | Your approach to debugging and breaking down challenges |
+| `communication` | How clearly you express technical and non-technical ideas |
+| `teamwork` | How you collaborate in group settings |
+
+It also determines your **learning style**: `visual`, `auditory`, `kinesthetic`, or `mixed`.
+
+## How responses are stored
+
+When you submit the diagnostic, Kairo writes your results to the `soft_skills_assessment` table:
+
+```sql
+CREATE TABLE soft_skills_assessment (
+  id              SERIAL PRIMARY KEY,
+  coder_id        INT NOT NULL UNIQUE,
+  autonomy        INT NOT NULL CHECK (autonomy BETWEEN 1 AND 5),
+  time_management INT NOT NULL CHECK (time_management BETWEEN 1 AND 5),
+  problem_solving INT NOT NULL CHECK (problem_solving BETWEEN 1 AND 5),
+  communication   INT NOT NULL CHECK (communication BETWEEN 1 AND 5),
+  teamwork        INT NOT NULL CHECK (teamwork BETWEEN 1 AND 5),
+  learning_style  learning_style_enum NOT NULL,
+  raw_answers     JSONB,
+  assessed_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+The `raw_answers` JSONB column stores your full response sequence so the AI can reference the exact pattern of choices, not just the final scores.
+
+## What happens after you finish
+
+<Steps>
+  <Step title="first_login flag is cleared">
+    The `first_login` column on your `users` record is set to `false`, so you won't see the diagnostic again.
+  </Step>
+  <Step title="Learning style is cached">
+    Your resolved learning style (e.g., `visual`) is written to `users.learning_style_cache` for fast access by the dashboard and AI services.
+  </Step>
+  <Step title="Plan generation is triggered">
+    Kairo fires a request to the Python AI microservice at `POST /generate-plan`. The service reads your soft skills snapshot, your current Moodle progress, and your module context to build a personalized 4-week study plan.
+  </Step>
+  <Step title="You land on your dashboard">
+    Once the plan is ready, you are redirected to your dashboard where your soft skills ring, learning style badge, and active plan are displayed.
+  </Step>
+</Steps>
+
+<Note>
+  If you navigate away before the plan finishes generating, the AI Trainer page shows a **"Kairo está preparando tu plan"** state with a progress indicator. The plan continues generating in the background.
+</Note>

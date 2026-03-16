@@ -1,0 +1,118 @@
+---
+title: "AI chat"
+description: "POST /chat/ask — Ask the Kairo AI tutor a question in the context of your learning plan."
+---
+
+## Overview
+
+`POST /chat/ask` connects the coder to **Kairo**, the Riwi AI tutor. The tutor answers programming questions concisely and practically, always leading with a short answer before elaborating. Responses are capped at 3 paragraphs to keep the chat widget readable on mobile.
+
+This endpoint is called directly by the frontend chat widget or proxied through the Node.js backend at `POST /api/ai/chat/ask`.
+
+<Warning>
+  Groq inference typically takes **2–6 seconds** for chat responses (`max_tokens=600`). The frontend should show a typing indicator while waiting.
+</Warning>
+
+---
+
+## Endpoint
+
+```
+POST /chat/ask
+```
+
+---
+
+## Request body
+
+<ParamField body="message" type="string" required>
+  The coder's question or message. Cannot be empty or whitespace-only.
+
+  ```
+  "¿Cuál es la diferencia entre INNER JOIN y LEFT JOIN?"
+  ```
+</ParamField>
+
+<ParamField body="coder_id" type="integer">
+  Optional. The coder's user ID. Currently accepted but not used to inject additional context into the prompt — reserved for future personalization (learning plan context, struggling topics).
+</ParamField>
+
+---
+
+## AI behavior
+
+<Note>
+  **Model**: `llama-3.3-70b-versatile` (configurable via `MODEL_NAME` env var), `temperature=0.7`, `max_tokens=600`.
+
+  The system prompt defines Kairo as an expert coding tutor at Riwi who:
+  - Answers concisely and practically
+  - Always gives a short answer first, then explains if needed
+  - Uses simple language
+  - Limits responses to a maximum of 3 paragraphs
+
+  The endpoint does **not** maintain conversation history between requests. Each call is stateless. Multi-turn conversation context must be managed on the client if needed.
+</Note>
+
+---
+
+## Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/chat/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "¿Cuál es la diferencia entre INNER JOIN y LEFT JOIN?",
+    "coder_id": 42
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/chat/ask",
+    json={
+        "message": "¿Cuál es la diferencia entre INNER JOIN y LEFT JOIN?",
+        "coder_id": 42,
+    },
+    timeout=15.0,
+)
+print(response.json()["reply"])
+```
+
+</CodeGroup>
+
+---
+
+## Response
+
+<ResponseField name="reply" type="string">
+  The AI tutor's plain-text response. Rendered as markdown in the chat widget.
+
+  ```
+  INNER JOIN devuelve solo las filas que tienen coincidencia en ambas tablas. LEFT JOIN devuelve todas las filas de la tabla izquierda, y NULL en las columnas de la derecha cuando no hay coincidencia.
+
+  Usa INNER JOIN cuando solo te interesan los registros relacionados. Usa LEFT JOIN cuando quieres mantener todos los registros de la tabla principal aunque no tengan datos en la otra tabla — por ejemplo, listar todos los clientes aunque no hayan hecho pedidos.
+  ```
+</ResponseField>
+
+---
+
+## Example response
+
+```json
+{
+  "reply": "INNER JOIN devuelve solo las filas que tienen coincidencia en ambas tablas. LEFT JOIN devuelve todas las filas de la tabla izquierda, y NULL en las columnas de la derecha cuando no hay coincidencia.\n\nUsa INNER JOIN cuando solo te interesan los registros relacionados. Usa LEFT JOIN cuando quieres mantener todos los registros de la tabla principal aunque no tengan datos en la otra tabla — por ejemplo, listar todos los clientes aunque no hayan hecho pedidos."
+}
+```
+
+---
+
+## Errors
+
+| HTTP status | Condition |
+|---|---|
+| `400` | `message` is empty or contains only whitespace |
+| `500` | Groq API call failed — returns `"AI tutor temporarily unavailable"` |

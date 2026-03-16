@@ -1,0 +1,218 @@
+---
+title: "Generate report"
+description: "POST /generate-report — Generate an executive AI report for a Team Leader."
+---
+
+## Overview
+
+`POST /generate-report` generates a structured AI-written performance report for a Team Leader (TL). The report covers the current state of their clan, highlights risk areas, and provides 3–5 concrete action items. Once generated, the report is automatically saved to the `ai_reports` table in Supabase with `viewed_by_tl: false`.
+
+<Note>
+  The reports router also exposes `GET /generate-pdf/{clan}` which builds a PDF report for a clan using `fpdf2`. That endpoint does not call the LLM — it pulls data directly from Supabase. This page documents the **AI generation** endpoint only.
+</Note>
+
+<Warning>
+  LLM generation typically takes **4–10 seconds** (`max_tokens=1000`, `temperature=0.6`). The TL dashboard should show a loading state and avoid re-triggering the request on repeated renders.
+</Warning>
+
+---
+
+## Endpoint
+
+```
+POST /generate-report
+```
+
+---
+
+## Request body
+
+<ParamField body="clan" type="string" required>
+  The clan identifier string (e.g. `"Alpha"`, `"Beta"`). Used as the report title subject and stored as `clan_id` in `ai_reports`.
+</ParamField>
+
+<ParamField body="tl_id" type="integer" required>
+  The Team Leader's user ID. Stored as `target_id` in `ai_reports` so the TL can later query their own reports.
+</ParamField>
+
+<ParamField body="total_coders" type="integer" required>
+  Total number of active coders in the clan at the time of report generation.
+</ParamField>
+
+<ParamField body="average_score" type="number" required>
+  Average Moodle score across all coders in the clan (0–100).
+</ParamField>
+
+<ParamField body="high_risk_count" type="integer" required>
+  Number of coders classified as high or critical risk (typically `average_score < 50`).
+</ParamField>
+
+<ParamField body="top_struggling_topics" type="array" default="[]">
+  List of the most common topic names where coders are underperforming. Included verbatim in the LLM prompt.
+
+  ```json
+  ["JOINs", "subqueries", "índices"]
+  ```
+</ParamField>
+
+<ParamField body="soft_skills_summary" type="object" default="{}">
+  Aggregated soft-skills averages for the clan. Keys are skill names, values are average scores (1–5). Serialized as JSON in the prompt so the LLM can reference them in the recommendations section.
+
+  ```json
+  {
+    "autonomy": 2.8,
+    "time_management": 3.1,
+    "problem_solving": 2.5,
+    "communication": 3.4,
+    "teamwork": 3.7
+  }
+  ```
+</ParamField>
+
+---
+
+## AI behavior
+
+<Note>
+  **Model**: `llama-3.3-70b-versatile` (configurable via `MODEL_NAME` env var), `temperature=0.6`, `max_tokens=1000`.
+
+  The prompt instructs the model to act as an **educational data analyst** for Riwi and produce a report with three sections:
+
+  1. **Current state summary** — overall performance narrative
+  2. **Main risks and concerns** — which coders or topics need immediate attention
+  3. **Concrete recommendations** — 3–5 action items the TL can execute this week
+
+  The model returns a `risk_level` string (`low` | `medium` | `high` | `critical`) calibrated to the data provided. This value is stored in `ai_reports.risk_level` and drives the color badge in the TL dashboard.
+
+  The generated report is persisted to `ai_reports` with `target_type: "clan"` and logged in `ai_generation_log`.
+</Note>
+
+---
+
+## Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/generate-report \
+  -H "Content-Type: application/json" \
+  -d '{
+    "clan": "Alpha",
+    "tl_id": 7,
+    "total_coders": 12,
+    "average_score": 58.3,
+    "high_risk_count": 4,
+    "top_struggling_topics": ["JOINs", "subqueries", "índices"],
+    "soft_skills_summary": {
+      "autonomy": 2.8,
+      "time_management": 3.1,
+      "problem_solving": 2.5,
+      "communication": 3.4,
+      "teamwork": 3.7
+    }
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/generate-report",
+    json={
+        "clan": "Alpha",
+        "tl_id": 7,
+        "total_coders": 12,
+        "average_score": 58.3,
+        "high_risk_count": 4,
+        "top_struggling_topics": ["JOINs", "subqueries", "índices"],
+        "soft_skills_summary": {
+            "autonomy": 2.8,
+            "time_management": 3.1,
+            "problem_solving": 2.5,
+            "communication": 3.4,
+            "teamwork": 3.7,
+        },
+    },
+    timeout=20.0,
+)
+print(response.json()["report"]["risk_level"])
+```
+
+</CodeGroup>
+
+---
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  `true` when the report was generated, parsed, and saved to Supabase.
+</ResponseField>
+
+<ResponseField name="report" type="object">
+  The AI-generated report object.
+
+  <Expandable title="report fields">
+    <ResponseField name="report_title" type="string">
+      Auto-formatted title, e.g. `"Clan Alpha — Performance Report"`.
+    </ResponseField>
+
+    <ResponseField name="generated_date" type="string">
+      Human-readable date string, e.g. `"March 16, 2026"`.
+    </ResponseField>
+
+    <ResponseField name="risk_level" type="string">
+      AI-assessed overall risk level: `"low"` | `"medium"` | `"high"` | `"critical"`. Stored in `ai_reports` and used to color-code the TL dashboard badge.
+    </ResponseField>
+
+    <ResponseField name="summary" type="string">
+      Narrative paragraph describing the clan's current performance state.
+    </ResponseField>
+
+    <ResponseField name="risks" type="string">
+      Narrative paragraph identifying the main risks and concerns for the TL.
+    </ResponseField>
+
+    <ResponseField name="recommendations" type="string">
+      Narrative paragraph with high-level guidance for the TL.
+    </ResponseField>
+
+    <ResponseField name="action_items" type="array">
+      3–5 concrete, actionable strings the TL should implement this week.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Example response
+
+```json
+{
+  "success": true,
+  "report": {
+    "report_title": "Clan Alpha — Performance Report",
+    "generated_date": "March 16, 2026",
+    "risk_level": "high",
+    "summary": "El clan Alpha presenta un puntaje promedio de 58.3/100, por debajo del umbral de rendimiento sólido (70). Con 4 de 12 coders en riesgo alto o crítico, el grupo necesita intervención inmediata en consultas multi-tabla y optimización de queries.",
+    "risks": "El principal riesgo es la concentración de dificultades en JOINs y subqueries, habilidades fundamentales para el módulo de Bases de Datos. Un problem_solving promedio de 2.5/5 indica que los coders tienen dificultades para descomponer problemas complejos de manera autónoma, lo que amplifica el riesgo de bloqueo antes de la prueba de desempeño.",
+    "recommendations": "Se recomienda una sesión de refuerzo grupal enfocada en JOINs con ejercicios en DB Fiddle antes de que finalice esta semana. Los 4 coders en riesgo alto deben recibir plan analítico regenerado con foco en recuperación. Además, incorporar revisión entre pares en las sesiones diarias para reforzar la habilidad de teamwork, que es la más fuerte del grupo y puede ser aprovechada.",
+    "action_items": [
+      "Convocar sesión de refuerzo grupal en JOINs y subqueries esta semana (miércoles o jueves).",
+      "Regenerar plan analítico para los 4 coders con average_score < 50.",
+      "Asignar pair programming entre coders con alto y bajo puntaje en los ejercicios del día.",
+      "Revisar los recursos subidos al módulo: ¿hay material específico de window functions y subqueries?",
+      "Programar check-in individual de 10 minutos con cada coder en riesgo antes del viernes."
+    ]
+  }
+}
+```
+
+---
+
+## Errors
+
+| HTTP status | Condition |
+|---|---|
+| `500` | Groq returned invalid JSON |
+| `500` | Supabase insert to `ai_reports` or `ai_generation_log` failed |
+| `500` | Any other Groq API or network error |

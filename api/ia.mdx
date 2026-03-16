@@ -1,0 +1,154 @@
+---
+title: "AI integration endpoints"
+description: "Node.js proxy endpoints that orchestrate calls to the Python AI microservice."
+---
+
+The AI endpoints are served under `/api/ai`. They act as an orchestration layer: the Node.js gateway enriches the request with data from PostgreSQL (module info, struggling topics, clan statistics), then forwards a slim payload to the Python microservice.
+
+<Info>
+  The Python microservice URL is configured via the `PYTHON_API_URL` environment variable (default: `http://localhost:8000`). All AI endpoints require authentication. Role requirements vary per endpoint.
+</Info>
+
+<Warning>
+  If the Python microservice is unreachable, AI endpoints return `502 Bad Gateway` with `{ "error": "AI service unavailable" }`. The Node.js gateway itself remains healthy.
+</Warning>
+
+---
+
+### `POST /api/ai/generate-plan`
+
+Generates a personalized 4-week complementary learning plan for the authenticated Coder. The Node.js gateway resolves the Coder's current module and struggling topic names from the database, then delegates to the Python `/generate-plan` route. The result is saved to `complementary_plans` by the Python service.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:**
+
+<ParamField body="topic" type="string">
+  Override label for the main topic. Defaults to `"Módulo {moduleId} — Semana {currentWeek}"`.
+</ParamField>
+
+<ParamField body="additionalTopics" type="array">
+  Extra topic names to include in plan generation. Defaults to `[]`.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful generation.
+</ResponseField>
+
+<ResponseField name="plan" type="object">
+  The generated plan object returned by the Python microservice.
+</ResponseField>
+
+<ResponseField name="metadata" type="object">
+  Plan metadata including `plan_id` from the Python service.
+</ResponseField>
+
+**Response (502):** AI service unavailable.
+
+```json
+{ "error": "AI service unavailable", "message": "connect ECONNREFUSED 127.0.0.1:8000" }
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/ai/generate-plan \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"topic": "SQL joins", "additionalTopics": ["GROUP BY", "subqueries"]}'
+```
+
+<Note>
+  This endpoint also logs the AI generation event to the `ai_generation_log` table in a non-blocking manner. Failures to log do not affect the response.
+</Note>
+
+---
+
+### `POST /api/ai/generate-focus-cards`
+
+Generates six prioritized focus cards for the Coder's current struggling topics. The Node.js gateway resolves the module ID and struggling topic names, then delegates to the Python `/generate-focus-cards` route.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:** No additional fields required. All data is derived from the Coder's latest `moodle_progress` record.
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  Focus card payload returned by the Python microservice. Typically contains an array of six cards with title, description, and priority level.
+</ResponseField>
+
+**Response (502):** AI service unavailable.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/ai/generate-focus-cards \
+  -H "Content-Type: application/json" \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/ai/generate-report`
+
+Generates an AI executive report for the TL's entire clan. The Node.js gateway collects clan-level statistics (total Coders, average Moodle score, high/critical risk count) and forwards them to the Python `/generate-report` route.
+
+**Auth required:** Yes — role `tl`
+
+**Request body:** No body required. Clan and statistics are derived from the TL's session.
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="report" type="object">
+  The generated report object returned by the Python microservice.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/ai/generate-report \
+  -H "Content-Type: application/json" \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/ai/health`
+
+Checks the health of both the Node.js gateway and the Python AI microservice.
+
+**Auth required:** Yes (any authenticated user)
+
+**Response (200):**
+
+<ResponseField name="node" type="string">
+  Always `"ok"` when the gateway is running.
+</ResponseField>
+
+<ResponseField name="python" type="object">
+  Health response from the Python microservice's `/health` endpoint.
+</ResponseField>
+
+**Response (503):** Python microservice unreachable.
+
+```json
+{ "node": "ok", "python": "unreachable", "error": "connect ECONNREFUSED 127.0.0.1:8000" }
+```
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/ai/health \
+  -b cookies.txt
+```

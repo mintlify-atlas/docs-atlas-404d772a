@@ -1,0 +1,294 @@
+---
+title: "Generate learning plan"
+description: "POST /generate-plan — Generate a personalized 4-week study plan using Groq LLM."
+---
+
+## Overview
+
+`POST /generate-plan` is the core AI endpoint of the Kairo microservice. It builds a fully personalized 4-week complementary study plan for a coder by combining their soft-skills diagnostic, Moodle progress data, and module curriculum. The plan is persisted in Supabase and immediately visible on the coder's dashboard.
+
+<Note>
+  The microservice exposes interactive API docs at **`/docs`** (Swagger UI) and **`/redoc`** (ReDoc). You can explore and test every endpoint directly from those pages.
+
+  A lightweight health check is available at **`GET /health`** — it returns the current model name, embedding status, and a list of all registered endpoints.
+</Note>
+
+<Warning>
+  LLM generation via Groq can take **5–15 seconds** depending on load. The endpoint uses `max_tokens=8192`. Do not set an HTTP timeout below 30 seconds on the calling client.
+</Warning>
+
+---
+
+## Endpoint
+
+```
+POST /generate-plan
+```
+
+---
+
+## Request body
+
+<ParamField body="coder_id" type="integer" required>
+  The unique ID of the coder in the `users` table. Used to fetch the soft-skills diagnostic and Moodle progress.
+</ParamField>
+
+<ParamField body="module_id" type="integer" required>
+  The ID of the Moodle module (e.g. Bases de Datos, Python). Used to fetch weeks, topics, and module metadata.
+</ParamField>
+
+<ParamField body="plan_type" type="string" default="interpretive">
+  Controls which prompt strategy the LLM uses.
+
+  - `"interpretive"` — first-time plan generated from the onboarding diagnostic only. Tonal framing: *"based on how you learn and your diagnostic results, we'll work like this…"*
+  - `"analytical"` — re-generated plan that incorporates Moodle performance data (score, struggling topics, week history). Tonal framing: *"last week we detected X, this week we address it with Y…"*
+</ParamField>
+
+<ParamField body="current_week" type="integer" default="1">
+  The coder's current week inside the official Moodle module. Tells the LLM where to start the complementary plan. Only relevant for the interpretive type; for analytical plans this value is auto-fetched from `moodle_progress` if not provided.
+</ParamField>
+
+<ParamField body="average_score" type="number" default="0.0">
+  The coder's average Moodle score (0–100). Required for `analytical` plans. If omitted with `plan_type="analytical"`, the service fetches it automatically from `moodle_progress`.
+</ParamField>
+
+<ParamField body="struggling_topics" type="array">
+  List of topic names the coder has struggled with (from Moodle quiz data). Week 1 of an analytical plan directly targets these topics. Defaults to `[]`.
+</ParamField>
+
+<ParamField body="weeks_completed" type="array">
+  Array of completed-week objects from Moodle, each containing historical score and struggling-topic data. Used by the prompt to detect performance trends (improving / declining / stable). Defaults to `[]`.
+
+  ```json
+  [
+    { "week": 1, "average_score": 72, "struggling_topics": ["JOINs"] },
+    { "week": 2, "average_score": 65, "struggling_topics": ["GROUP BY", "subqueries"] }
+  ]
+  ```
+</ParamField>
+
+---
+
+## AI behavior
+
+<Note>
+  **Model**: `llama-3.3-70b-versatile` (configurable via the `MODEL_NAME` environment variable).
+
+  The service calls `build_interpretive_prompt()` or `build_analytical_prompt()` in `prompt_builder.py` to assemble a structured prompt that includes:
+
+  - The coder's soft-skills profile (autonomy, time management, problem solving, communication, teamwork, learning style)
+  - Module curriculum (weeks and topics from Supabase)
+  - A curated resource catalog (`resource_catalog.py`) — the LLM is **forbidden** from inventing URLs
+  - Specific instructions per learning style (visual / kinesthetic / reading / auditory / mixed)
+  - Adaptive rules for each weak soft skill (e.g. low autonomy → step-by-step instructions)
+  - Week 4 Day 5 is always a performance simulation exercise
+
+  The prompt instructs Groq to respond with a strict `json_object` (via `response_format`). If parsing fails, the endpoint returns a safe fallback structure with `status: "fallback"` so the database insert never crashes.
+</Note>
+
+---
+
+## Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/generate-plan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "coder_id": 42,
+    "module_id": 3,
+    "plan_type": "analytical",
+    "current_week": 2,
+    "average_score": 61.5,
+    "struggling_topics": ["JOINs", "GROUP BY"],
+    "weeks_completed": [
+      { "week": 1, "average_score": 72, "struggling_topics": ["JOINs"] },
+      { "week": 2, "average_score": 61, "struggling_topics": ["GROUP BY", "subqueries"] }
+    ]
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/generate-plan",
+    json={
+        "coder_id": 42,
+        "module_id": 3,
+        "plan_type": "analytical",
+        "current_week": 2,
+        "average_score": 61.5,
+        "struggling_topics": ["JOINs", "GROUP BY"],
+        "weeks_completed": [
+            {"week": 1, "average_score": 72, "struggling_topics": ["JOINs"]},
+            {"week": 2, "average_score": 61, "struggling_topics": ["GROUP BY", "subqueries"]},
+        ],
+    },
+    timeout=30.0,
+)
+data = response.json()
+print(data["plan_id"])
+```
+
+</CodeGroup>
+
+---
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  `true` when the plan was generated and saved successfully.
+</ResponseField>
+
+<ResponseField name="plan_id" type="integer">
+  The Supabase row ID of the saved plan in `complementary_plans`. `null` if the DB insert failed (plan content is still returned).
+</ResponseField>
+
+<ResponseField name="plan" type="object">
+  The full AI-generated plan object.
+
+  <Expandable title="plan fields">
+    <ResponseField name="plan_type" type="string">
+      `"interpretive"` or `"analytical"` — mirrors the request.
+    </ResponseField>
+
+    <ResponseField name="targeted_soft_skill" type="string">
+      The weakest soft skill detected from the diagnostic (e.g. `"time_management"`). Every day includes a 20-minute activity targeting this skill.
+    </ResponseField>
+
+    <ResponseField name="learning_style_applied" type="string">
+      The learning style label used to format all technical activities (e.g. `"Kinestésico"`, `"Visual"`, `"Lector/Escritor"`, `"Auditivo"`, `"Mixto"`).
+    </ResponseField>
+
+    <ResponseField name="summary" type="string">
+      Two-sentence narrative describing what the diagnostic detected and how this plan addresses it.
+    </ResponseField>
+
+    <ResponseField name="weeks" type="array">
+      Exactly 4 week objects, each with 5 days (20 days total).
+
+      <Expandable title="week object">
+        <ResponseField name="week_number" type="integer">
+          1–4.
+        </ResponseField>
+
+        <ResponseField name="focus" type="string">
+          The main technical topic or recovery theme for this week.
+        </ResponseField>
+
+        <ResponseField name="days" type="array">
+          5 day objects.
+
+          <Expandable title="day object">
+            <ResponseField name="day" type="integer">
+              Day number within the week (1–5).
+            </ResponseField>
+
+            <ResponseField name="technical_activity" type="object">
+              45-minute technical activity.
+
+              <Expandable title="technical_activity fields">
+                <ResponseField name="title" type="string">Actionable title.</ResponseField>
+                <ResponseField name="description" type="string">Step-by-step instructions adapted to learning style.</ResponseField>
+                <ResponseField name="duration_minutes" type="integer">`45`</ResponseField>
+                <ResponseField name="difficulty" type="string">`"beginner"` | `"intermediate"` | `"advanced"`</ResponseField>
+                <ResponseField name="resources" type="array">List of verified URLs from the resource catalog.</ResponseField>
+              </Expandable>
+            </ResponseField>
+
+            <ResponseField name="soft_skill_activity" type="object">
+              20-minute soft-skill activity targeting the weakest skill.
+
+              <Expandable title="soft_skill_activity fields">
+                <ResponseField name="title" type="string">Activity name.</ResponseField>
+                <ResponseField name="skill" type="string">Soft skill key (e.g. `"time_management"`).</ResponseField>
+                <ResponseField name="description" type="string">Concrete exercise steps.</ResponseField>
+                <ResponseField name="duration_minutes" type="integer">`20`</ResponseField>
+                <ResponseField name="reflection_prompt" type="string">Open question tied to the day's topic.</ResponseField>
+              </Expandable>
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="metadata" type="object">
+  Execution context returned alongside the plan.
+
+  <Expandable title="metadata fields">
+    <ResponseField name="plan_type" type="string">Mirror of request `plan_type`.</ResponseField>
+    <ResponseField name="coder_id" type="integer">Mirror of request `coder_id`.</ResponseField>
+    <ResponseField name="module_id" type="integer">Mirror of request `module_id`.</ResponseField>
+    <ResponseField name="module_name" type="string">Human-readable module name fetched from Supabase.</ResponseField>
+    <ResponseField name="current_week" type="integer">The week the plan starts from.</ResponseField>
+    <ResponseField name="execution_ms" type="integer">Total wall-clock time in milliseconds for the Groq call + DB operations.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Example response
+
+```json
+{
+  "success": true,
+  "plan_id": 188,
+  "plan": {
+    "plan_type": "analytical",
+    "targeted_soft_skill": "time_management",
+    "learning_style_applied": "Kinestésico",
+    "summary": "La semana pasada detectamos dificultades en JOINs y GROUP BY con un puntaje de 61.5/100. Este plan arranca con recuperación intensiva en consultas multi-tabla y agrupaciones antes de avanzar a subqueries.",
+    "weeks": [
+      {
+        "week_number": 1,
+        "focus": "Recuperación en: JOINs, GROUP BY",
+        "days": [
+          {
+            "day": 1,
+            "technical_activity": {
+              "title": "JOINs en PostgreSQL: practica con esquemas reales",
+              "description": "1. Abre DB Fiddle y crea las tablas orders y customers. 2. Escribe INNER JOIN, LEFT JOIN y RIGHT JOIN sobre esas tablas. 3. Comprueba los resultados y ajusta hasta que sean los esperados.",
+              "duration_minutes": 45,
+              "difficulty": "intermediate",
+              "resources": [
+                "https://pgexercises.com/",
+                "https://www.db-fiddle.com/"
+              ]
+            },
+            "soft_skill_activity": {
+              "title": "Bloque Pomodoro: JOINs en 25 minutos",
+              "skill": "time_management",
+              "description": "Activa un temporizador de 25 minutos. Resuelve el ejercicio del día sin pausas. Al sonar la alarma, registra cuánto completaste.",
+              "duration_minutes": 20,
+              "reflection_prompt": "¿Qué parte del JOIN te tomó más tiempo y por qué?"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "metadata": {
+    "plan_type": "analytical",
+    "coder_id": 42,
+    "module_id": 3,
+    "module_name": "Bases de Datos",
+    "current_week": 2,
+    "execution_ms": 7340
+  }
+}
+```
+
+---
+
+## Errors
+
+| HTTP status | Condition |
+|---|---|
+| `400` | `plan_type` is not `"interpretive"` or `"analytical"` |
+| `400` | No soft-skills diagnostic found for `coder_id` (coder has not completed onboarding) |
+| `404` | `module_id` does not exist in the database |
+| `500` | Groq API call failed or returned non-parseable JSON (a safe fallback plan with `status: "fallback"` is still returned) |

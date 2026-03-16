@@ -1,0 +1,98 @@
+---
+title: "Risk detection"
+description: "How Kairo automatically identifies and flags at-risk Coders."
+---
+
+Kairo continuously analyses each Coder's academic progress and soft skill scores to detect when someone may need support. When the risk engine identifies a concern, it creates a **risk flag** that your TL dashboard surfaces immediately.
+
+## How risk level is calculated
+
+Risk is determined by the `v_coder_risk_analysis` database view, which combines data from `soft_skills_assessment` and `moodle_progress` for every Coder:
+
+```sql
+CASE 
+  WHEN ssa.autonomy <= 2 AND mp.average_score < 70 THEN 'high'
+  WHEN ssa.autonomy <= 2 OR  mp.average_score < 70 THEN 'medium'
+  ELSE                                                   'low'
+END AS calculated_risk_level
+```
+
+Two signals drive the calculation:
+
+| Signal | Source | Threshold |
+|--------|--------|-----------|
+| `autonomy` | `soft_skills_assessment.autonomy` (1–5 scale) | ≤ 2 indicates low self-direction |
+| `average_score` | `moodle_progress.average_score` | < 70 indicates academic struggle |
+
+## The three risk levels
+
+<AccordionGroup>
+  <Accordion title="Low risk">
+    The Coder's autonomy score is above 2 **and** their Moodle average is 70 or higher. No immediate intervention is required. The risk badge on their card is absent or displayed in green.
+  </Accordion>
+  <Accordion title="Medium risk">
+    Either the Coder's autonomy score is ≤ 2 **or** their Moodle average is below 70 — but not both simultaneously. This is an early warning. You should check in with the Coder and consider generating an AI report to understand what is happening.
+  </Accordion>
+  <Accordion title="High risk">
+    Both conditions are true: autonomy ≤ 2 **and** Moodle average < 70. The Coder is struggling with both independence and academic performance. An unresolved high-risk flag increments the **En riesgo** counter on your dashboard and triggers the red warning badge in the topbar.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  Risk flags are auto-detected (`auto_detected = true`) by the platform. You can also create manual flags from a Coder's profile if you observe issues that the automated signals do not capture.
+</Warning>
+
+## The `risk_flags` table
+
+Each flag stored in `risk_flags` represents a discrete risk event for a single Coder:
+
+```sql
+CREATE TABLE risk_flags (
+  id            SERIAL PRIMARY KEY,
+  coder_id      INT NOT NULL,
+  risk_level    risk_level_enum NOT NULL,   -- 'low', 'medium', 'high'
+  reason        TEXT NOT NULL,
+  auto_detected BOOLEAN DEFAULT TRUE,
+  detected_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  resolved      BOOLEAN DEFAULT FALSE,
+  resolved_at   TIMESTAMP NULL
+);
+```
+
+| Column | Description |
+|--------|-------------|
+| `risk_level` | One of `low`, `medium`, or `high` |
+| `reason` | Human-readable explanation of why the flag was raised |
+| `auto_detected` | `true` if the platform raised the flag; `false` if a TL created it manually |
+| `resolved` | `false` while the flag is active. Set to `true` when you mark it resolved |
+| `resolved_at` | Timestamp populated when the flag is resolved |
+
+## How risk flags appear on your dashboard
+
+Unresolved risk flags (`resolved = false`) surface in three places on the TL dashboard:
+
+1. **Stats row** — the **En riesgo** stat card shows the total count of Coders with an active `high` or `critical` unresolved flag.
+2. **Topbar badge** — a red triangle with a count appears in the top-right header when at least one high-risk Coder exists in your clan.
+3. **Coders table** — each Coder's row shows a coloured risk badge. The table sorts by risk level: `critical` first, then `high`, `medium`, and unranked last.
+
+The detail panel also shows a prominent **⚠ En riesgo** badge below the Coder's name when they have an active unresolved flag.
+
+## Resolving a risk flag
+
+When you have intervened and the situation is under control, mark the flag resolved:
+
+<Steps>
+  <Step title="Open the Coder's detail panel">
+    Click the Coder's row in the dashboard table to open their detail on the right.
+  </Step>
+  <Step title="Review the active flag">
+    The risk badge and reason text are visible in the detail header. Confirm you understand what triggered the flag.
+  </Step>
+  <Step title="Mark as resolved">
+    Click **Resolver** in the detail panel. Kairo sets `resolved = true` and records `resolved_at = NOW()` on the flag row. The Coder's badge disappears from the table and the dashboard counters update immediately.
+  </Step>
+</Steps>
+
+<Tip>
+  After resolving a flag, consider generating an [AI report](/features/ai-reports) for the Coder to document the situation and get recommendations for next steps.
+</Tip>

@@ -1,0 +1,252 @@
+---
+title: "Environment configuration"
+description: "Configure environment variables for all Kairo services."
+---
+
+Kairo requires two `.env` files — one for each backend. Neither file should ever be committed to version control; both are listed in `.gitignore`.
+
+---
+
+## `backend-node/.env`
+
+Create this file in the root of the `backend-node` directory.
+
+### Server
+
+| Variable | Example value | Description |
+|---|---|---|
+| `PORT` | `3000` | Port the Express server listens on |
+| `NODE_ENV` | `development` | Set to `production` on hosted deployments |
+| `SESSION_SECRET` | `a_long_random_string` | Secret used to sign the `riwi.sid` session cookie |
+
+```env
+PORT=3000
+NODE_ENV=development
+SESSION_SECRET=your_session_secret
+```
+
+### Database
+
+| Variable | Example value | Description |
+|---|---|---|
+| `DB_HOST` | `db.xxxx.supabase.co` | PostgreSQL host from Supabase |
+| `DB_PORT` | `5432` | Standard PostgreSQL port |
+| `DB_NAME` | `postgres` | Database name |
+| `DB_USER` | `postgres.your_user` | Supabase pooler user |
+| `DB_PASSWORD` | — | Database password |
+| `DATABASE_URL` | `postgresql://...` | Full connection URI (used by `pg` pool and session store) |
+| `SUPABASE_URL` | `https://xxxx.supabase.co` | Your Supabase project URL |
+| `SUPABASE_ANON_KEY` | `eyJ...` | Public anon key from **Settings → API** |
+
+```env
+DB_HOST=your_host
+DB_PORT=5432
+DB_NAME=your_name
+DB_USER=postgres.your_user
+DB_PASSWORD=your_password
+DATABASE_URL=your_database_url
+
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_anon_key
+```
+
+### Frontend & Python connection
+
+| Variable | Example value | Description |
+|---|---|---|
+| `FRONTEND_URL` | `http://127.0.0.1:5500/frontend` | Origin used by the CORS allowlist |
+| `PYTHON_API_URL` | `http://localhost:8000` | Base URL of the Python AI microservice |
+
+```env
+FRONTEND_URL=http://127.0.0.1:5500/frontend
+PYTHON_API_URL=http://localhost:8000
+```
+
+<Warning>
+`FRONTEND_URL` must exactly match the origin (scheme + host + port) from which the browser loads the frontend. If it doesn't match, the Node.js CORS middleware blocks every browser request with a 403. In production, set this to your full hosted origin, e.g. `https://hecrodcode.github.io`.
+</Warning>
+
+### Social authentication
+
+Create OAuth apps in the [GitHub Developer Settings](https://github.com/settings/developers) and [Google Cloud Console](https://console.cloud.google.com) to obtain these credentials.
+
+| Variable | Description |
+|---|---|
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret |
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret |
+
+```env
+GITHUB_CLIENT_ID=your_client
+GITHUB_CLIENT_SECRET=your_client_secret
+
+GOOGLE_CLIENT_ID=your_client
+GOOGLE_CLIENT_SECRET=your_client_secret
+```
+
+### Email (SMTP)
+
+Kairo sends OTP verification emails. The example below uses a Gmail account with an App Password.
+
+| Variable | Example value | Description |
+|---|---|---|
+| `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
+| `SMTP_PORT` | `465` | SMTP port (465 = SSL, 587 = TLS) |
+| `SMTP_SECURE` | `true` | Use SSL when `true` |
+| `SMTP_USER` | `your_email@gmail.com` | Sender email address |
+| `SMTP_PASS` | — | Gmail App Password (not your account password) |
+| `SMTP_FROM` | `"Kairo <your_email@gmail.com>"` | Display name in the From header |
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your_email
+SMTP_PASS=your_app_password
+SMTP_FROM="Kairo <your_email>"
+```
+
+### AI service key
+
+| Variable | Description |
+|---|---|
+| `RIWI_IA_KEY` | Internal API key used to authenticate requests from the Node.js gateway to protected AI routes |
+
+```env
+RIWI_IA_KEY=your_ia_key
+```
+
+---
+
+## `backend-python/.env`
+
+Create this file in the root of the `backend-python` directory.
+
+### Server
+
+| Variable | Example value | Description |
+|---|---|---|
+| `PORT` | `8000` | Port Uvicorn listens on |
+| `ENV` | `development` | Runtime environment label |
+
+```env
+PORT=8000
+ENV=development
+```
+
+### AI model
+
+| Variable | Example value | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | `gsk_...` | Your [Groq API key](https://console.groq.com). The variable name follows the OpenAI SDK convention used by the Groq client. |
+| `MODEL_NAME` | `llama-3.3-70b-versatile` | LLM model identifier passed to the Groq API. The README references `Qwen2.5-7B-Instruct`. |
+
+```env
+OPENAI_API_KEY=your_api_key
+MODEL_NAME=your_model
+```
+
+### Supabase
+
+| Variable | Example value | Description |
+|---|---|---|
+| `SUPABASE_URL` | `https://xxxx.supabase.co` | Same project URL as the Node.js backend |
+| `SUPABASE_SERVICE_KEY` | `eyJ...` | Service-role key from **Settings → API**. Grants full database access — keep this secret. |
+
+```env
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_KEY=your_service_key
+```
+
+### Service URLs
+
+| Variable | Example value | Description |
+|---|---|---|
+| `NODE_URL` | `http://localhost:3000` | Base URL of the Node.js gateway, added to the Python CORS allowlist |
+| `FRONTEND_URL` | `http://localhost:5500` | Frontend origin, added to the Python CORS allowlist |
+
+```env
+NODE_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:5500
+```
+
+<Note>
+The Python CORS middleware always permits `http://localhost:3000`, `http://localhost:5500`, `http://127.0.0.1:5500`, and `http://localhost:8000` in development, regardless of these values. Setting them becomes important in production where requests originate from different hostnames.
+</Note>
+
+---
+
+## Complete file references
+
+<CodeGroup>
+
+```env backend-node/.env
+# SERVER CONFIGURATION
+PORT=3000
+NODE_ENV=development
+
+# SECURITY & SESSIONS
+SESSION_SECRET=your_session_secret
+
+# DATABASE (POSTGRESQL - SUPABASE)
+DB_HOST=your_host
+DB_PORT=5432
+DB_NAME=your_name
+DB_USER=postgres.your_user
+DB_PASSWORD=your_password
+DATABASE_URL=your_database_url
+
+# SUPABASE CONFIG
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_anon_key
+
+# FRONTEND CONNECTION
+FRONTEND_URL=http://127.0.0.1:5500/frontend
+
+# PYTHON CONNECTION
+PYTHON_API_URL=http://localhost:8000
+
+# SOCIAL AUTH - GITHUB
+GITHUB_CLIENT_ID=your_client
+GITHUB_CLIENT_SECRET=your_client_secret
+
+# SOCIAL AUTH - GOOGLE
+GOOGLE_CLIENT_ID=your_client
+GOOGLE_CLIENT_SECRET=your_client_secret
+
+# AUTHENTICATION SMTP
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=your_email
+SMTP_PASS=your_app_password
+SMTP_FROM="Kairo <your_email>"
+
+# API KEY AI
+RIWI_IA_KEY=your_ia_key
+```
+
+```env backend-python/.env
+# PYTHON CONFIGURATION
+PORT=8000
+ENV=development
+
+# OPENAI (Groq-compatible endpoint)
+OPENAI_API_KEY=your_api_key
+
+# MODEL IA
+MODEL_NAME=your_model
+
+# SUPABASE CONFIG
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_KEY=your_service_key
+
+# BACKEND NODE PORT
+NODE_URL=http://localhost:3000
+
+# FRONTEND PORT
+FRONTEND_URL=http://localhost:5500
+```
+
+</CodeGroup>

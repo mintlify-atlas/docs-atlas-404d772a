@@ -1,0 +1,118 @@
+---
+title: "AI Trainer"
+description: "Kairo's conversational AI tutor for real-time learning support."
+---
+
+The **AI Trainer** is Kairo's built-in coding tutor. It answers your questions about programming concepts, helps you unblock yourself on exercises, and explains topics in the context of your current module — not in generic, textbook terms.
+
+## What the AI Trainer does
+
+The AI Trainer is a conversational interface powered by `llama-3.3-70b-versatile` (via Groq). It is scoped to your role as a Riwi bootcamp student:
+
+- Answers technical questions about the topics in your current module
+- Explains concepts at the right level for your learning style
+- Gives short answers first, then expands if you need more detail
+- Responds in concise, practical language — maximum 3 paragraphs per reply
+
+<Info>
+  The AI Trainer is not a general-purpose chatbot. It is configured as "Kairo, an expert coding tutor at Riwi bootcamp" and keeps responses focused on programming education.
+</Info>
+
+## The chat interface
+
+The AI Trainer screen is accessible from the sidebar (AI Trainer link) or the bottom navigation bar on mobile. The screen has three states:
+
+<AccordionGroup>
+  <Accordion title="No plan yet">
+    If you don't have an active plan, you see the **"Aún no tienes un plan activo"** panel with a **"Generar mi plan personalizado"** button. Generating a plan is required before daily activities are available, but you can still use the chat at any time.
+  </Accordion>
+  <Accordion title="Plan generating">
+    The **"Kairo está preparando tu plan"** panel shows a progress bar and status label while the AI microservice builds your plan in the background. The screen polls automatically and transitions to the active state when the plan is ready.
+  </Accordion>
+  <Accordion title="Active plan">
+    The full plan view: week tabs, day navigation, technical card, soft skill card, TL resources section, and the day-completion controls.
+  </Accordion>
+</AccordionGroup>
+
+## How the chat works
+
+When you send a message, the frontend posts to the Python AI microservice:
+
+```http
+POST /chat/ask
+Content-Type: application/json
+
+{
+  "message": "How do I use LEFT JOIN when one table might not have matching rows?",
+  "coder_id": 42
+}
+```
+
+The Python endpoint (`app/routers/chat.py`) calls the Groq API with a system prompt that establishes the tutor persona:
+
+```python
+{
+  "role": "system",
+  "content": (
+      "You are Kairo, an expert coding tutor at Riwi bootcamp. "
+      "You help students with programming questions in a concise, "
+      "motivating, and practical way. "
+      "Always give a short answer first, then explain if needed. "
+      "Use simple language. Max 3 paragraphs."
+  ),
+}
+```
+
+The reply is returned as `{ "reply": "..." }` and displayed in the chat window.
+
+## Questions you can ask
+
+The AI Trainer works best for questions directly related to what you're studying. Examples:
+
+- *"Why is my SQL query returning duplicate rows after a JOIN?"*
+- *"What's the difference between `==` and `===` in JavaScript?"*
+- *"Can you show me an example of a REST controller in Node.js?"*
+- *"I don't understand what async/await actually does under the hood."*
+- *"How do I improve my time management when I'm stuck on a hard problem?"*
+
+## Daily exercises
+
+In addition to the free-form chat, each technical activity card includes an **"Ejercicio del día"** button. Clicking it opens an embedded Monaco code editor with a personalized exercise generated for that specific activity:
+
+```http
+POST /api/coder/exercise/generate
+```
+
+The exercise modal shows:
+
+| Element | Description |
+|---------|-------------|
+| Language badge | The programming language the exercise targets (e.g., `SQL`, `JavaScript`) |
+| Difficulty label | Matches the `activity_type` for that day (`guided`, `semi_guided`, `autonomous`) |
+| Description | The problem statement |
+| Hints | Step-by-step hints you can reveal one at a time |
+| Monaco editor | Your code editor for writing the solution |
+| Expected output | What a correct solution produces |
+| Solution | A reference solution you can reveal after attempting |
+
+You can submit your solution with **"Enviar solución"**. Your TL can then review submitted code from the TL dashboard.
+
+## TL resources
+
+Below the activity cards, the **"Recursos del TL para este tema"** section shows files and links your Team Leader has uploaded for the current activity's topic. Resources are fetched via a semantic search:
+
+```http
+POST /api/coder/resources/search
+```
+
+If your TL hasn't uploaded resources for that topic yet, you see an empty state: *"Tu TL aún no ha subido recursos para este tema."*
+
+## Limitations
+
+<Warning>
+  The AI Trainer is scoped to Riwi bootcamp content. It is not a replacement for your TL's feedback or for the formal Moodle curriculum. For grade-related concerns or official assessments, contact your TL directly.
+</Warning>
+
+- Responses are capped at 600 tokens (~450 words) to keep answers focused
+- The tutor does not have memory between separate sessions — each conversation starts fresh
+- The `coder_id` field is accepted but the current implementation does not inject your personal plan context into the chat system prompt; it uses the shared Riwi tutor persona

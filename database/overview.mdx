@@ -1,0 +1,101 @@
+---
+title: "Database overview"
+description: "PostgreSQL schema overview for Kairo on Supabase — 14 tables, 8 enums, 2 views."
+---
+
+Kairo's database runs on **PostgreSQL 14+** hosted on Supabase. The schema defines 14 tables, 8 custom ENUM types, and 2 views that power the coder dashboard and risk analysis features.
+
+Row Level Security (RLS) is enabled on every table. Supabase enforces the policies automatically on every query, so neither backend needs to add manual `WHERE user_id = ...` guards.
+
+---
+
+## Table domains
+
+<CardGroup cols={2}>
+  <Card title="Users & Auth" icon="users">
+    **`users`** — All platform users (Coders and Team Leaders), storing email, hashed password, role, and clan assignment.
+  </Card>
+  <Card title="Learning data" icon="graduation-cap">
+    **`soft_skills_assessment`** · **`moodle_progress`** · **`modules`** · **`topics`** · **`coder_struggling_topics`** — Onboarding evaluations, academic progress synced from Moodle, and difficulty tracking.
+  </Card>
+  <Card title="Plans & Activities" icon="list-check">
+    **`complementary_plans`** · **`plan_activities`** · **`activity_progress`** · **`evidence_submissions`** — AI-generated personalized learning plans (the 6 Cards), their daily activities, completion tracking, and submitted evidence.
+  </Card>
+  <Card title="Communication" icon="message">
+    **`tl_feedback`** · **`risk_flags`** — Team Leader messages to coders (with unread notifications) and auto-detected risk alerts.
+  </Card>
+  <Card title="AI & Analytics" icon="chart-bar">
+    **`ai_reports`** · **`ai_generation_log`** — Executive reports for Team Leaders and a full audit trail of every AI call made by the platform.
+  </Card>
+</CardGroup>
+
+---
+
+## Views
+
+| View | Purpose |
+|---|---|
+| `v_coder_dashboard` | Aggregates each coder's soft-skills scores, current module, week, average score, total activities, and completion percentage into a single row. |
+| `v_coder_risk_analysis` | Calculates each coder's current and computed risk level from autonomy scores and academic averages, alongside activity completion counts. |
+
+See [Database views](/database/views) for the full SQL and column reference.
+
+---
+
+## Key design decisions
+
+**JSONB for plan content**
+
+The `complementary_plans.plan_content` column stores the AI-generated plan as JSONB rather than a normalized relational structure. This keeps the schema flexible as plan formats evolve without requiring migrations for each AI output change. Similarly, `moodle_progress.weeks_completed` stores a JSON array of completed week numbers, and `ai_generation_log` stores the full `input_payload` and `output_payload` JSONB blobs for auditing.
+
+**Custom ENUMs**
+
+Eight PostgreSQL ENUM types enforce valid values at the database level for roles, learning styles, activity types, feedback categories, risk levels, report targets, AI agents, and priority levels. Inserting an out-of-range value fails at the database layer before any application code runs. See [Enum types](/database/enums) for the full list.
+
+**Cascade deletes**
+
+All child tables reference `users(id) ON DELETE CASCADE`. Deleting a user removes all their assessments, progress records, plans, activities, feedback, and risk flags automatically. Module-level cascades also clean up topics and progress when a module is removed.
+
+**Priority-ordered 6 Cards**
+
+Each AI-generated learning plan carries a `priority_level` (high / medium / low). The system always generates 6 plans per coder per module: 2 high, 2 medium, 2 low. The frontend orders them by `priority_level DESC` to ensure the most important cards always appear first.
+
+**Notification state**
+
+The `tl_feedback.is_read` boolean tracks whether a coder has seen a Team Leader message. A `false` value drives the red notification dot in the UI. A composite index on `(coder_id, is_read)` makes unread-count queries fast.
+
+**Clan segmentation**
+
+`users.clan_id` stores the coder's clan name (`Turing`, `Tesla`, `McCarthy`). Team Leaders use it to filter their view to a specific clan. An index on `clan_id` keeps those queries performant.
+
+---
+
+## File structure
+
+```
+database/
+├── schema.sql                                  # All CREATE TABLE, ENUM, VIEW statements
+├── rls_policies.sql                            # All RLS ENABLE and CREATE POLICY statements
+├── migrations/
+│   ├── 001_add_clans_and_priority_and_notifications.sql
+│   ├── 002_add_raw_answers_to_soft_skills.sql
+│   └── 005_create_user_profiles.sql
+└── seeds/
+    ├── users.sql                               # Test users, modules, topics, and progress
+    └── README.md
+```
+
+---
+
+## Apply order
+
+When setting up a new environment, apply files in this order:
+
+1. `schema.sql` — creates all ENUMs, tables, indexes, and views
+2. `rls_policies.sql` — enables RLS and creates all access policies
+3. `migrations/*.sql` — applies incremental schema changes in numeric order
+4. `seeds/users.sql` — loads test data (development only)
+
+<Note>
+All migration files use `IF NOT EXISTS` guards. Running a migration a second time is safe and will not error.
+</Note>

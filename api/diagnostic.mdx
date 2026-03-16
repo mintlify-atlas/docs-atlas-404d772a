@@ -1,0 +1,216 @@
+---
+title: "Diagnostic"
+description: "Endpoints for the onboarding diagnostic assessment."
+---
+
+The diagnostic is a 20-question onboarding quiz that measures a Coder's learning style and soft skills. It is the first thing a new Coder completes after registration.
+
+All diagnostic endpoints are mounted under `/api/diagnostics`.
+
+<Info>
+  Submitting the diagnostic automatically triggers generation of the Coder's first interpretive complementary plan in the background. The `201` response is returned immediately — the plan generation is fire-and-forget via the Python microservice.
+</Info>
+
+---
+
+## How scoring works
+
+The diagnostic accepts raw answers and derives all scores server-side. Each answer option carries a score tag (VARK, ILS, or Kolb framework tags).
+
+**Learning style** is determined by tallying VARK tags (`V`, `A`, `R`, `K`) plus ILS visual/verbal tags (`VIS`, `VRB`). The dominant style must represent at least 35% of all tagged responses; otherwise the result is `mixed`.
+
+**Soft skill scores** (1–5) are derived from ILS and Kolb tags:
+
+| Soft skill | Contributing tags |
+|---|---|
+| Autonomy | `REF`, `AC`, `RO` |
+| Time management | `SEQ`, `AE`, `SNS` |
+| Problem solving | `GLO`, `AC`, `INT` |
+| Communication | `ACT`, `CE`, `VRB` |
+| Teamwork | `ACT`, `CE`, `SNS` |
+
+<Note>
+  The frontend never calculates scores. All score derivation logic lives in `diagnosticControllers.js`.
+</Note>
+
+---
+
+### `POST /api/diagnostics`
+
+Saves the onboarding diagnostic for the authenticated Coder. Derives learning style and soft skill scores from the raw answer array, upserts the `soft_skills_assessment` record, and asynchronously triggers first plan generation.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:**
+
+<ParamField body="answers" type="array" required>
+  Array of answer objects. Must not be empty.
+</ParamField>
+
+<ParamField body="answers[].questionId" type="number" required>
+  ID of the answered question.
+</ParamField>
+
+<ParamField body="answers[].optionId" type="number" required>
+  ID of the chosen option.
+</ParamField>
+
+<ParamField body="answers[].score" type="string" required>
+  Score tag for the chosen option (e.g. `"V"`, `"REF"`, `"ACT"`, `"CE"`). The full tag vocabulary is defined in the onboarding data file.
+</ParamField>
+
+**Response (201):**
+
+<ResponseField name="message" type="string">
+  `"Diagnostic saved successfully"`
+</ResponseField>
+
+<ResponseField name="planRequested" type="boolean">
+  Always `true`. Indicates that first plan generation has been triggered in the background.
+</ResponseField>
+
+<ResponseField name="diagnostic" type="object">
+  The saved assessment.
+</ResponseField>
+
+<ResponseField name="diagnostic.coderId" type="number">
+  Coder's user ID.
+</ResponseField>
+
+<ResponseField name="diagnostic.autonomy" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostic.timeManagement" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostic.problemSolving" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostic.communication" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostic.teamwork" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostic.learningStyle" type="string">
+  One of `visual`, `auditory`, `reading`, `kinesthetic`, `mixed`.
+</ResponseField>
+
+<ResponseField name="diagnostic.assessedAt" type="string">
+  ISO 8601 timestamp of when the assessment was saved.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/diagnostics \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{
+    "answers": [
+      { "questionId": 1, "optionId": 3, "score": "V" },
+      { "questionId": 2, "optionId": 7, "score": "REF" },
+      { "questionId": 3, "optionId": 11, "score": "ACT" }
+    ]
+  }'
+```
+
+---
+
+### `GET /api/diagnostics/me`
+
+Returns the diagnostic assessment for the authenticated Coder. Returns `404` if the Coder has not yet completed the assessment.
+
+**Auth required:** Yes — role `coder`
+
+**Response (200):**
+
+<ResponseField name="diagnostic" type="object">
+  Same shape as the `diagnostic` field in the `POST /api/diagnostics` response.
+</ResponseField>
+
+**Response (404):**
+
+```json
+{
+  "error": "Diagnostic not found",
+  "message": "You have not completed the assessment yet"
+}
+```
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/diagnostics/me \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/diagnostics/all`
+
+Returns the diagnostic assessments for all Coders, with their names and emails joined. For TL use.
+
+**Auth required:** Yes — role `tl`
+
+**Response (200):**
+
+<ResponseField name="diagnostics" type="array">
+  List of all diagnostic records.
+</ResponseField>
+
+<ResponseField name="diagnostics[].coderId" type="number">
+  Coder's user ID.
+</ResponseField>
+
+<ResponseField name="diagnostics[].coderName" type="string">
+  Coder's display name.
+</ResponseField>
+
+<ResponseField name="diagnostics[].coderEmail" type="string">
+  Coder's email address.
+</ResponseField>
+
+<ResponseField name="diagnostics[].autonomy" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostics[].timeManagement" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostics[].problemSolving" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostics[].communication" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostics[].teamwork" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="diagnostics[].learningStyle" type="string">
+  Learning style classification.
+</ResponseField>
+
+<ResponseField name="diagnostics[].assessedAt" type="string">
+  ISO 8601 assessment timestamp.
+</ResponseField>
+
+<ResponseField name="total" type="number">
+  Total number of diagnostics returned.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/diagnostics/all \
+  -b cookies.txt
+```

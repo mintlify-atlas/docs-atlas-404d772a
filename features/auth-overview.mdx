@@ -1,0 +1,121 @@
+---
+title: "Authentication overview"
+description: "How Kairo handles user authentication, sessions, and role-based access."
+---
+
+Kairo uses session-based authentication backed by PostgreSQL. Every request to a protected route passes through the `isAuthenticated` middleware, which validates the active session or Passport user object before the controller runs.
+
+## Session storage
+
+Sessions are stored directly in PostgreSQL using `connect-pg-simple`. The session cookie is named `riwi.sid`.
+
+This means sessions survive server restarts and work correctly in multi-instance deployments without a separate Redis store. The session record is destroyed on logout and the `riwi.sid` cookie is cleared from the browser.
+
+## Password hashing
+
+All passwords are hashed with `bcrypt` at a cost factor of **12** before being written to the database:
+
+```javascript
+const hashedPassword = await bcrypt.hash(password, 12);
+```
+
+Kairo never stores plain-text passwords. Users who registered via OAuth (GitHub or Google) have a sentinel value of `oauth_<provider>` in the `password` column. The login controller detects this and blocks password-based login attempts for those accounts:
+
+```javascript
+const isOAuthUser = user?.password?.startsWith('oauth_');
+```
+
+## Role-based access
+
+Every user in the `users` table has a `role` value from the `role_enum` type: either `coder` or `tl`.
+
+The `hasRole` middleware enforces this at the route level:
+
+```javascript
+// All TL routes require role = 'tl'
+router.use(isAuthenticated, hasRole('tl'));
+
+// Onboarding completion requires role = 'coder'
+router.patch('/complete-onboarding', isAuthenticated, hasRole('coder'), updateFirstLoginStatus);
+```
+
+A `coder` who attempts to call a TL endpoint receives a `403 Forbidden` response. A `tl` bypasses the `checkOnboarding` gate entirely — TLs are never redirected to the diagnostic screen.
+
+## The `first_login` flag
+
+New accounts are created with `first_login = true`. This flag controls the onboarding gate:
+
+- **Coders with `first_login = true`** are redirected to the diagnostic assessment on their first login before they can access their dashboard. See [Onboarding](/features/onboarding) for details.
+- **Once onboarding is complete**, `PATCH /api/auth/complete-onboarding` sets `first_login = false`. The Coder is never redirected to onboarding again.
+- **TLs** are not subject to the `first_login` gate.
+
+## Registration flow
+
+<Steps>
+  <Step title="Submit the registration form">
+    You fill in your full name, email, clan, password, and password confirmation on `/auth/register.html`. Clans available at registration: Hamilton, Thompson, Turing, McCarthy, Ritchie, Tesla. The role is fixed to `coder` via a hidden field (`role = 'coder'`).
+  </Step>
+  <Step title="Account is created">
+    The backend hashes your password with bcrypt (cost 12) and inserts a row into `users` with `otp_verified = false` and `first_login = true`.
+  </Step>
+  <Step title="OTP email is sent">
+    Kairo generates a one-time code (valid for 15 minutes) and emails it to your address via the email service. The code is stored in `otp_verifications` with `is_used = false`.
+  </Step>
+  <Step title="Verify your email">
+    Enter the code on the email verification screen (`/auth/email-validation.html`). On success, `otp_verified` is set to `true` on your user record, a session is created, and you are redirected to onboarding.
+  </Step>
+</Steps>
+
+## Login flow
+
+<Steps>
+  <Step title="Submit credentials">
+    Enter your email and password on `/auth/login.html` and click **Iniciar Sesión**.
+  </Step>
+  <Step title="Backend validates credentials">
+    Kairo looks up your account by email, checks that it is not an OAuth account, and compares the submitted password against the stored bcrypt hash. If validation fails, it returns `401 Invalid credentials`.
+  </Step>
+  <Step title="OTP check">
+    If your email is not yet verified (`otp_verified = false`), Kairo sends a new OTP code and returns a `403` response with `requiresOtp: true`, redirecting you to the verification screen.
+  </Step>
+  <Step title="Session is created">
+    Passport calls `req.login(user)`, which serializes your user ID into the session. `req.session.userId` is also set explicitly for routes that check the session directly.
+  </Step>
+  <Step title="Role-based redirect">
+    The frontend reads `role` and `firstLogin` from the response. A `coder` with `firstLogin: true` is sent to onboarding; otherwise to their dashboard. A `tl` goes directly to the TL dashboard.
+  </Step>
+</Steps>
+
+## Auth middleware
+
+Two middleware functions protect all non-public routes:
+
+| Middleware | What it does |
+|------------|--------------|
+| `isAuthenticated` | Checks `req.user` (set by Passport) or `req.session.userId`. If neither exists, returns `401`. If the user ID is valid, attaches the full user object to `req.user` for downstream controllers. |
+| `hasRole(...roles)` | Checks `req.user.role` against the allowed roles array. Returns `403` if the role does not match. |
+| `checkOnboarding` | Blocks Coders with `first_login = true` from accessing protected Coder routes. TLs bypass this check entirely. |
+
+<Warning>
+  If a user account is deleted from the database while a session is active, `isAuthenticated` detects the missing user and destroys the session, returning `401 User account no longer exists`.
+</Warning>
+
+## Checking session state
+
+The frontend calls `GET /api/auth/check` on page load to determine whether the current visitor has an active session:
+
+```json
+{
+  "authenticated": true,
+  "user": {
+    "id": 42,
+    "email": "ada@riwi.io",
+    "fullName": "Ada Lovelace",
+    "role": "coder",
+    "clanId": "turing",
+    "firstLogin": false
+  }
+}
+```
+
+An unauthenticated visitor receives `{ "authenticated": false }` with a `401` status.

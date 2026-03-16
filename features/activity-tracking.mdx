@@ -1,0 +1,146 @@
+---
+title: "Activity tracking"
+description: "Track daily learning activities and submit evidence of completion."
+---
+
+Kairo tracks every activity in your learning plan — when you completed it, how long you spent, what you reflected on, and any evidence you submitted. This data feeds your dashboard progress ring and gives your TL visibility into your work without requiring manual check-ins.
+
+## The Activities screen
+
+The **Actividades** screen (sidebar or bottom nav) lists all assignments your TL has published to your clan or to all coders. You can filter by:
+
+- **Todas** — all active assignments
+- **Pendientes** — assignments you haven't completed yet
+- **Vencidas** — assignments past their deadline
+
+This screen is separate from your AI-generated plan activities. It shows structured assignments created by your TL (PDF files, repo links, or instructions).
+
+## Activity progress table
+
+When you mark a plan activity complete, Kairo records a row in `activity_progress`:
+
+```sql
+CREATE TABLE activity_progress (
+  id                  SERIAL PRIMARY KEY,
+  activity_id         INT NOT NULL,
+  coder_id            INT NOT NULL,
+  completed           BOOLEAN DEFAULT FALSE,
+  reflection_text     TEXT,
+  time_spent_minutes  INT,
+  completed_at        TIMESTAMP NULL,
+  UNIQUE (activity_id, coder_id)
+);
+```
+
+| Column | What it stores |
+|--------|----------------|
+| `completed` | `true` once you mark the activity done |
+| `reflection_text` | Your written reflection, submitted alongside the completion |
+| `time_spent_minutes` | How long you actually spent on the activity |
+| `completed_at` | The exact timestamp of completion |
+
+The `UNIQUE (activity_id, coder_id)` constraint means each coder has at most one progress record per activity. Re-submitting updates the existing row via `ON CONFLICT DO UPDATE`.
+
+## Marking an activity complete
+
+<Steps>
+  <Step title="Open the AI Trainer">
+    Navigate to **AI Trainer** in the sidebar. Select the week and day you want to complete.
+  </Step>
+  <Step title="Review the activity">
+    Read the technical card and soft skill card for that day. Optionally open the day's exercise with **"Ejercicio del día"**.
+  </Step>
+  <Step title="Click Completado">
+    Press the **"Completado"** button on the technical card. This sends:
+
+    ```http
+    POST /api/coder/plan/:planId/day/:day/complete
+    ```
+
+    The backend marks both activities for that day as complete in `activity_progress` and updates the `completed_days` JSONB in your `complementary_plans` record.
+  </Step>
+  <Step title="Earn Kairo Score points">
+    Each completed day awards points to your `kairo_score`. The updated score is returned in the API response and displayed immediately in the dashboard welcome card.
+  </Step>
+</Steps>
+
+You can also mark individual activities complete (without going through the day flow) using:
+
+```http
+PATCH /api/coder/activities/:id/complete
+Content-Type: application/json
+
+{
+  "reflectionText": "I learned that LEFT JOIN keeps all rows from the left table...",
+  "timeSpent": 35
+}
+```
+
+## Submitting evidence
+
+For activities that require proof of work, you can attach evidence. Evidence is stored in the `evidence_submissions` table:
+
+```sql
+CREATE TABLE evidence_submissions (
+  id            SERIAL PRIMARY KEY,
+  activity_id   INT NOT NULL,
+  coder_id      INT NOT NULL,
+  file_url      TEXT,
+  link_url      TEXT,
+  description   TEXT,
+  submitted_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+You can submit:
+
+<CardGroup cols={2}>
+  <Card title="File upload" icon="file">
+    Upload a PDF, screenshot, or other file. Stored in Supabase Storage under the `assignment-files` bucket at path `{clan}/module-{moduleId}/{timestamp}_{filename}`.
+  </Card>
+  <Card title="Link" icon="link">
+    Paste a URL to a GitHub repo, deployed project, Loom video, or any external resource that demonstrates your work.
+  </Card>
+</CardGroup>
+
+You can include both a file and a link on the same submission, plus a `description` field to explain what the evidence shows.
+
+## Progress calculation
+
+Your overall activity completion percentage is calculated by the `v_coder_dashboard` view:
+
+```sql
+CREATE VIEW v_coder_dashboard AS
+SELECT
+  u.id,
+  u.full_name,
+  COUNT(DISTINCT pa.id) AS total_activities,
+  SUM(CASE WHEN ap.completed = TRUE THEN 1 ELSE 0 END) AS completed_activities,
+  ROUND(
+    (SUM(CASE WHEN ap.completed = TRUE THEN 1 ELSE 0 END)::NUMERIC /
+     NULLIF(COUNT(DISTINCT pa.id), 0)) * 100, 2
+  ) AS completion_percentage
+FROM users u
+LEFT JOIN complementary_plans cp ON u.id = cp.coder_id AND cp.is_active = TRUE
+LEFT JOIN plan_activities pa ON cp.id = pa.plan_id
+LEFT JOIN activity_progress ap ON pa.id = ap.activity_id AND ap.coder_id = u.id
+WHERE u.role = 'coder'
+GROUP BY u.id, ...;
+```
+
+The `completion_percentage` reflects how many of the activities in your **active plan** you have completed. It updates in real time as you mark days done.
+
+## How your TL sees your progress
+
+Your TL's dashboard reads the same `activity_progress` and `v_coder_dashboard` data to see:
+
+- Which coders in their clan have completed activities today
+- Each coder's overall completion percentage
+- Any reflection text you've submitted (giving the TL insight into your understanding)
+- Evidence files and links you've attached
+
+<Tip>
+  Writing a reflection when marking activities complete gives your TL context for their feedback. Even a single sentence about what you learned or found difficult helps them personalize their coaching.
+</Tip>
+
+For more on how TLs interact with this data, see the [TL dashboard](/features/tl-dashboard) page.

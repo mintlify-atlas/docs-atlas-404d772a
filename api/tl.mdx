@@ -1,0 +1,304 @@
+---
+title: "Team Leader endpoints"
+description: "Endpoints for TL dashboard, Coder management, risk flags, and analytics."
+---
+
+All endpoints in this group require a valid session and the `tl` role. They are mounted under `/api/tl` (and some under `/api` for shared assignment routes).
+
+---
+
+### `GET /api/tl/dashboard`
+
+Returns the full TL dashboard payload: TL profile, all Coders in the TL's clan with their latest Moodle progress and soft skill scores, clan overview statistics, and soft-skill averages.
+
+**Auth required:** Yes — role `tl`
+
+**Response (200):**
+
+<ResponseField name="tl" type="object">
+  TL profile.
+</ResponseField>
+
+<ResponseField name="tl.fullName" type="string">
+  TL display name.
+</ResponseField>
+
+<ResponseField name="tl.clanId" type="string">
+  TL's assigned clan.
+</ResponseField>
+
+<ResponseField name="coders" type="array">
+  All Coders in the clan with fields: `id`, `full_name`, `email`, `first_login`, `clan_id`, `kairo_score`, `average_score`, `current_week`, `autonomy`, `time_management`, `problem_solving`, `communication`, `teamwork`, `learning_style`, `risk_level`.
+</ResponseField>
+
+<ResponseField name="overview" type="object">
+  Clan-level summary statistics.
+</ResponseField>
+
+<ResponseField name="overview.totalCoders" type="number">
+  Total Coders in the clan.
+</ResponseField>
+
+<ResponseField name="overview.completedOnboarding" type="number">
+  Coders who have completed onboarding.
+</ResponseField>
+
+<ResponseField name="overview.pendingOnboarding" type="number">
+  Coders who have not yet completed onboarding.
+</ResponseField>
+
+<ResponseField name="overview.highRiskCoders" type="number">
+  Coders with an unresolved `high` or `critical` risk flag.
+</ResponseField>
+
+<ResponseField name="overview.clanAvgScore" type="number">
+  Average Kairo score across the clan.
+</ResponseField>
+
+<ResponseField name="softSkillsAverage" type="object">
+  Clan-level average for each soft skill: `autonomy`, `time_management`, `problem_solving`, `communication`, `teamwork`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tl/dashboard \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/tl/feedback`
+
+Submits feedback from the TL to a specific Coder. Saves the feedback in `tl_feedback` and dispatches a real-time SSE notification to the Coder.
+
+**Auth required:** Yes — role `tl`
+
+**Request body:**
+
+<ParamField body="coderId" type="number" required>
+  Database ID of the target Coder.
+</ParamField>
+
+<ParamField body="feedbackText" type="string" required>
+  Feedback message content.
+</ParamField>
+
+<ParamField body="feedbackType" type="string" required>
+  Feedback category. Common values: `encouragement`, `improvement`, `warning`.
+</ParamField>
+
+**Response (201):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  `"Feedback registered"`
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The created `tl_feedback` record.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/tl/feedback \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"coderId": 5, "feedbackText": "Great progress on SQL this week.", "feedbackType": "encouragement"}'
+```
+
+---
+
+### `GET /api/tl/submissions`
+
+Returns up to 50 most recent exercise submissions from Coders in the TL's clan, with full exercise details and Coder information.
+
+**Auth required:** Yes — role `tl`
+
+**Response (200):**
+
+<ResponseField name="submissions" type="array">
+  List of submission objects. Each includes: `id`, `code_submitted`, `submitted_at`, `tl_feedback_text`, `reviewed_at`, `reviewed_by`, `exercise_title`, `language`, `difficulty`, `topic`, `solution`, `expected_output`, `day_number`, `coder_name`, `coder_id`, `plan_id`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tl/submissions \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/tl/submissions/:id/review`
+
+Adds TL feedback text to a specific exercise submission. Awards bonus Kairo points to the Coder and sends an SSE notification.
+
+**Auth required:** Yes — role `tl`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Submission ID. Must belong to a Coder in the TL's clan.
+</ParamField>
+
+**Request body:**
+
+<ParamField body="feedbackText" type="string" required>
+  Review feedback for the submission.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="submission" type="object">
+  Updated submission record with `id`, `tl_feedback_text`, and `reviewed_at`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/tl/submissions/23/review \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"feedbackText": "Good use of JOIN but consider using an alias for readability."}'
+```
+
+---
+
+### `GET /api/tl/coder/:id/score`
+
+Returns the Kairo score history for a specific Coder (last 20 events), plus their current score.
+
+**Auth required:** Yes — role `tl`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Coder user ID.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="coderId" type="number">
+  The queried Coder's ID.
+</ResponseField>
+
+<ResponseField name="currentScore" type="number">
+  Current Kairo score.
+</ResponseField>
+
+<ResponseField name="history" type="array">
+  Up to 20 score events ordered by most recent. Each entry has `label` (human-readable event name), `points` (positive or negative), and `createdAt`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tl/coder/5/score \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/tl/ranking`
+
+Returns the Kairo score ranking for the TL's clan and the global top-10 ranking across all clans.
+
+**Auth required:** Yes — role `tl`
+
+**Response (200):**
+
+<ResponseField name="clan" type="string">
+  The TL's clan identifier.
+</ResponseField>
+
+<ResponseField name="clanRanking" type="array">
+  All active Coders in the clan ordered by `kairo_score` descending. Each entry includes `id`, `full_name`, `kairo_score`, `clan`, and `rank`.
+</ResponseField>
+
+<ResponseField name="globalRanking" type="array">
+  Top 10 Coders across all clans by Kairo score.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tl/ranking \
+  -b cookies.txt
+```
+
+---
+
+## Resource management
+
+TLs can upload PDF resources for their Coders. Uploads are limited to PDF files up to 20 MB.
+
+### `POST /api/tl/resource/upload`
+
+Uploads a PDF resource file.
+
+**Auth required:** Yes — role `tl`
+
+**Request:** `multipart/form-data`
+
+<ParamField body="file" type="file" required>
+  PDF file. Maximum size: 20 MB.
+</ParamField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/tl/resource/upload \
+  -b cookies.txt \
+  -F "file=@/path/to/resource.pdf"
+```
+
+---
+
+### `GET /api/tl/resource/list`
+
+Lists all resources uploaded by the TL.
+
+**Auth required:** Yes — role `tl`
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tl/resource/list \
+  -b cookies.txt
+```
+
+---
+
+### `DELETE /api/tl/resource/:resourceId`
+
+Deletes a resource uploaded by the TL.
+
+**Auth required:** Yes — role `tl`
+
+**Path parameters:**
+
+<ParamField path="resourceId" type="number" required>
+  Resource ID to delete.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful deletion.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:3000/api/tl/resource/11 \
+  -b cookies.txt
+```

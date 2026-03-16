@@ -1,0 +1,99 @@
+---
+title: "Feedback"
+description: "How Team Leaders provide feedback to Coders through Kairo."
+---
+
+Kairo gives you a structured way to send written feedback to Coders. Feedback is always tied to a specific Coder, has a type that signals its purpose, and triggers an instant notification so the Coder knows to check it.
+
+## Feedback types
+
+Every piece of feedback you send has a `feedback_type`, defined by the `feedback_type_enum`:
+
+<AccordionGroup>
+  <Accordion title="weekly">
+    End-of-week summary feedback covering the Coder's overall progress, consistency, and areas to focus on in the coming week. Use this for your regular weekly check-in cadence.
+  </Accordion>
+  <Accordion title="activity">
+    Feedback tied to a specific complementary plan activity. When you link feedback to a `plan_id`, the Coder can see exactly which exercise or task your comments refer to. Use this after reviewing a submission or evidence upload.
+  </Accordion>
+  <Accordion title="general">
+    Open-ended feedback that doesn't fit a specific week or activity. Use this for ad-hoc encouragement, a quick observation, or a heads-up about something you noticed.
+  </Accordion>
+</AccordionGroup>
+
+## The `tl_feedback` table
+
+All feedback you send is stored in `tl_feedback`:
+
+```sql
+CREATE TABLE tl_feedback (
+  id            SERIAL PRIMARY KEY,
+  coder_id      INT NOT NULL,
+  tl_id         INT NOT NULL,
+  plan_id       INT,                          -- optional FK to complementary_plans
+  feedback_text TEXT NOT NULL,
+  feedback_type feedback_type_enum,           -- 'weekly', 'activity', 'general'
+  is_read       BOOLEAN DEFAULT FALSE,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+| Column | Description |
+|--------|-------------|
+| `coder_id` | The Coder receiving the feedback |
+| `tl_id` | Your user ID as the TL who sent it |
+| `plan_id` | Optional link to a specific `complementary_plans` record |
+| `feedback_text` | The full text of your feedback message |
+| `feedback_type` | `weekly`, `activity`, or `general` |
+| `is_read` | `false` until the Coder opens the feedback; drives the notification red dot |
+
+## Sending feedback from the dashboard
+
+You can send feedback directly from the Coder detail panel on the dashboard:
+
+<Steps>
+  <Step title="Select a Coder">
+    Click any row in the Coders table to open the detail panel on the right side of the dashboard.
+  </Step>
+  <Step title="Choose a feedback type">
+    In the **Dar feedback** section at the bottom of the detail panel, open the dropdown and select `weekly`, `activity`, or `general`.
+  </Step>
+  <Step title="Write your message">
+    Type your feedback in the textarea. The input is sanitized server-side before being stored.
+  </Step>
+  <Step title="Send">
+    Click **Enviar**. Kairo calls `POST /api/tl/feedback` with your session ID as `tl_id`. The new row is written to `tl_feedback` with `is_read = false`, and the Coder receives a real-time notification immediately.
+  </Step>
+</Steps>
+
+<Note>
+  The notification text shown to the Coder includes your name and the first 50 characters of your message, so they get context before opening the feedback.
+</Note>
+
+## Sending feedback from the assignment view
+
+From the **Actividades** page, you can review individual code exercise submissions and leave targeted feedback through the review modal. This workflow is described in detail in the [TL dashboard](/features/tl-dashboard) exercise submissions section. The resulting feedback is stored on `exercise_submissions.tl_feedback_text`, not in `tl_feedback`, but the notification flow is identical.
+
+## How Coders see feedback
+
+When you send feedback, the Coder's notification bell in their dashboard immediately shows a **red dot** (driven by `is_read = false`). Clicking the bell opens the notifications dropdown where the feedback is listed.
+
+When the Coder clicks the feedback notification:
+
+- The full `feedback_text` is displayed.
+- Kairo sets `is_read = true` on the `tl_feedback` row.
+- The red dot disappears from the notification bell.
+
+<Info>
+  Feedback marked as read (`is_read = true`) remains accessible in the Coder's notification history — it is not deleted or hidden.
+</Info>
+
+## Linking feedback to a plan
+
+When you create feedback with `feedback_type = 'activity'`, you can optionally attach it to a specific complementary plan by supplying the `plan_id`. This creates a foreign key reference:
+
+```sql
+FOREIGN KEY (plan_id) REFERENCES complementary_plans(id) ON DELETE SET NULL
+```
+
+If the plan is later deleted, the `plan_id` field on the feedback row is set to `NULL`, but the feedback text itself is preserved.

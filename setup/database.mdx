@@ -1,0 +1,190 @@
+---
+title: "Database setup"
+description: "Set up PostgreSQL on Supabase for Kairo."
+---
+
+Kairo stores all user data, academic progress, AI-generated plans, and audit logs in **PostgreSQL 14+ on Supabase**. The schema is defined in `database/schema.sql` and uses custom ENUM types and Row Level Security policies to enforce data integrity and access control.
+
+---
+
+## Create a Supabase project
+
+<Steps>
+
+<Step title="Sign in to Supabase">
+
+Go to [supabase.com](https://supabase.com) and sign in. Create a new organization if you don't have one, then click **New project**.
+
+</Step>
+
+<Step title="Configure the project">
+
+Choose a region close to your users. Set a strong database password and save it — you'll need it for `DB_PASSWORD` and `DATABASE_URL`.
+
+</Step>
+
+<Step title="Collect connection credentials">
+
+Once the project is ready, gather these values from your Supabase dashboard:
+
+| Setting location | Credential | Variable |
+|---|---|---|
+| **Settings → Database → Connection string (URI)** | Full connection URI | `DATABASE_URL` |
+| **Settings → Database → Host** | Hostname | `DB_HOST` |
+| **Settings → Database → User** | Pooler username | `DB_USER` |
+| **Settings → API → Project URL** | Project URL | `SUPABASE_URL` |
+| **Settings → API → anon/public** | Anon key | `SUPABASE_ANON_KEY` |
+| **Settings → API → service_role** | Service-role key | `SUPABASE_SERVICE_KEY` |
+
+</Step>
+
+</Steps>
+
+---
+
+## Run the schema
+
+Open the Supabase **SQL Editor** and paste the full contents of `database/schema.sql`, then click **Run**. The script is idempotent-safe — the file includes commented-out `DROP` statements at the top that you can uncomment if you need a clean reset.
+
+```bash
+# Alternative: run with psql from your terminal
+psql "postgresql://postgres.<user>:<password>@<host>:5432/postgres" \
+  -f database/schema.sql
+```
+
+This creates **14 tables**, **8 ENUM types**, and **2 views**.
+
+---
+
+## ENUM types
+
+Kairo defines 8 custom ENUM types to enforce valid values at the database level. These are used across tables as column types.
+
+| ENUM type | Values | Used in |
+|---|---|---|
+| `role_enum` | `coder`, `tl` | `users.role` |
+| `learning_style_enum` | `visual`, `auditory`, `kinesthetic`, `mixed` | `soft_skills_assessment.learning_style` |
+| `activity_type_enum` | `guided`, `semi_guided`, `autonomous` | `plan_activities.activity_type` |
+| `feedback_type_enum` | `weekly`, `activity`, `general` | `tl_feedback.feedback_type` |
+| `risk_level_enum` | `low`, `medium`, `high` | `risk_flags.risk_level`, `ai_reports.risk_level` |
+| `report_target_enum` | `coder`, `clan`, `cohort` | `ai_reports.target_type` |
+| `ai_agent_enum` | `learning_plan`, `report_generator`, `risk_detector` | `ai_generation_log.agent_type` |
+| `priority_level_enum` | `low`, `medium`, `high` | `complementary_plans.priority_level` |
+
+---
+
+## Tables
+
+The 14 tables are grouped by domain:
+
+### Users
+
+| Table | Description |
+|---|---|
+| `users` | All platform users. The `role` column (`role_enum`) determines whether a user is a Coder or a Team Leader. The `clan_id` column (`Turing`, `Tesla`, or `McCarthy`) lets TLs filter their cohort. |
+| `soft_skills_assessment` | One-to-one with `users`. Stores five skill scores (1–5) for autonomy, time management, problem solving, communication, and teamwork, plus a `learning_style_enum` value and the raw quiz answers as JSONB. |
+
+### Academic content
+
+| Table | Description |
+|---|---|
+| `modules` | Bootcamp modules (e.g., "Backend with Node.js", "React"). Each module has a `total_weeks` count. |
+| `topics` | Specific topics within a module, with an optional `category` label. |
+| `moodle_progress` | Tracks a Coder's current week, completed weeks (JSONB array), struggling topics (text array), and `average_score` per module. |
+| `coder_struggling_topics` | Many-to-many junction table linking Coders to the specific topics they self-report as difficult. |
+
+### Personalized plans (the 6 Cards)
+
+| Table | Description |
+|---|---|
+| `complementary_plans` | AI-generated 4-week study plans. Each Coder has up to 6 active plans with a `priority_level` (2 high, 2 medium, 2 low). Stores the plan content as JSONB along with snapshots of the soft-skills and Moodle data used at generation time. |
+| `plan_activities` | Daily activities within a plan. Each record has a `day_number`, `estimated_time_minutes`, `activity_type_enum`, and a `skill_focus` label. |
+| `activity_progress` | Tracks whether a Coder has completed each activity, how long they spent, and an optional reflection text. |
+| `evidence_submissions` | File URLs and link URLs uploaded by Coders as evidence of completing an activity. |
+
+### Communication
+
+| Table | Description |
+|---|---|
+| `tl_feedback` | Messages sent by Team Leaders to Coders. The `is_read` boolean drives the notification bell indicator — `false` shows a red dot. |
+| `risk_flags` | Automatic risk alerts. The `auto_detected` flag distinguishes AI-generated alerts from manual ones. Resolved flags set `resolved = true` and record a `resolved_at` timestamp. |
+
+### AI & reporting
+
+| Table | Description |
+|---|---|
+| `ai_reports` | Executive summaries generated for Team Leaders. The `target_type` (`report_target_enum`) indicates whether the report covers a single Coder, a clan, or a full cohort. |
+| `ai_generation_log` | Full audit trail of every AI call. Stores the agent type (`ai_agent_enum`), input and output payloads (JSONB), model name, execution time in milliseconds, and a success flag. |
+
+---
+
+## Views
+
+Two views are created by the schema for common query patterns:
+
+**`v_coder_dashboard`** — aggregates each Coder's current module, average score, total activities, completed activities, and completion percentage. Used by the Coder dashboard endpoint.
+
+**`v_coder_risk_analysis`** — calculates a `calculated_risk_level` from autonomy scores and academic averages. A Coder with `autonomy ≤ 2` AND `average_score < 70` is classified as `high`; either condition alone is `medium`. Used by the TL analytics view.
+
+---
+
+## Row Level Security
+
+After running `schema.sql`, apply RLS policies from `database/rls_policies.sql`:
+
+```bash
+psql "your_database_url" -f database/rls_policies.sql
+```
+
+RLS is enabled on all 14 tables. The policies enforce two access patterns:
+
+- **Coders** can read and write only their own records (matched on `auth.uid()`).
+- **Team Leaders** can read all records within the platform and write feedback, plans, and activities.
+
+Key policies:
+
+| Table | Coder access | TL access |
+|---|---|---|
+| `users` | Own profile only | All users |
+| `soft_skills_assessment` | Own assessment | All assessments |
+| `moodle_progress` | Own progress | All progress |
+| `complementary_plans` | Own plans (read) | All plans (read + write) |
+| `tl_feedback` | Read received messages; mark as read | Send and edit messages |
+| `risk_flags` | Own alerts | All alerts |
+| `ai_reports` | — | All reports |
+| `ai_generation_log` | — | All logs |
+
+<Note>
+If you get a `permission denied` error on a table, check `rls_policies.sql` for the relevant policy. The most common cause is querying a table with a role that has no SELECT policy defined.
+</Note>
+
+---
+
+## Seed data
+
+The `database/seeds/` directory contains `users.sql`, which populates the database with sample data for development and testing:
+
+- **8 users**: 2 Team Leaders (María, Carlos) and 6 Coders across three clans:
+  - **Clan Turing**: Juan, Ana
+  - **Clan Tesla**: Pedro, Sofía
+  - **Clan McCarthy**: Luis, María
+- **Soft-skills assessments** for all 6 Coders with varied scores.
+- **6 bootcamp modules**: Python Fundamentals, HTML & CSS, JavaScript, Databases, Backend with Node.js, React.
+- **Academic progress** with scores ranging from 58 to 95 to create realistic risk scenarios.
+
+```bash
+# Run seeds via Supabase SQL Editor or psql
+psql "your_database_url" -f database/seeds/users.sql
+```
+
+<Warning>
+Seed passwords are stored in plaintext for development convenience. Never run seeds against a production database.
+</Warning>
+
+Verify the seeds ran correctly:
+
+```sql
+SELECT COUNT(*) FROM users;                    -- Expected: 8
+SELECT COUNT(*) FROM modules;                  -- Expected: 6
+SELECT COUNT(*) FROM soft_skills_assessment;   -- Expected: 6
+```

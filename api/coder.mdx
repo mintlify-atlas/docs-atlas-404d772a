@@ -1,0 +1,506 @@
+---
+title: "Coder endpoints"
+description: "Endpoints for Coder dashboard, onboarding, plan access, and profile."
+---
+
+All endpoints in this group are mounted under `/api/coder`. Every request must:
+
+1. Have a valid session (`riwi.sid` cookie).
+2. Belong to a user with role `coder`.
+3. Have `first_login = false` (onboarding completed). Requests from Coders who have not completed onboarding return `403` with `requiresOnboarding: true`.
+
+<Info>
+  The only exception to the onboarding check is the diagnostic assessment itself, which is mounted under `/api/diagnostics`.
+</Info>
+
+---
+
+### `GET /api/coder/dashboard`
+
+Returns a single aggregated payload with everything the Coder dashboard needs: user profile, soft skills, Moodle progress, active plan status, TL feedback notifications, risk flags, and recent performance tests.
+
+**Auth required:** Yes — role `coder`
+
+**Response (200):**
+
+<ResponseField name="user" type="object">
+  Coder profile and current module info.
+</ResponseField>
+
+<ResponseField name="user.fullName" type="string">
+  Display name.
+</ResponseField>
+
+<ResponseField name="user.email" type="string">
+  Email address.
+</ResponseField>
+
+<ResponseField name="user.clanId" type="string">
+  Assigned clan.
+</ResponseField>
+
+<ResponseField name="user.kairoScore" type="number">
+  Gamification score (default 50).
+</ResponseField>
+
+<ResponseField name="user.moduleName" type="string">
+  Name of the current Moodle module.
+</ResponseField>
+
+<ResponseField name="softSkills" type="object | null">
+  Soft skill scores derived from the onboarding diagnostic. `null` if the diagnostic has not been completed.
+</ResponseField>
+
+<ResponseField name="softSkills.autonomy" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="softSkills.timeManagement" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="softSkills.problemSolving" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="softSkills.communication" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="softSkills.teamwork" type="number">
+  Score 1–5.
+</ResponseField>
+
+<ResponseField name="softSkills.learningStyle" type="string">
+  One of `visual`, `auditory`, `reading`, `kinesthetic`, `mixed`.
+</ResponseField>
+
+<ResponseField name="progress" type="object">
+  Latest Moodle progress snapshot.
+</ResponseField>
+
+<ResponseField name="progress.currentWeek" type="number">
+  Current week in the module (defaults to 1 for new Coders).
+</ResponseField>
+
+<ResponseField name="progress.averageScore" type="number | null">
+  Moodle average score. `null` when no data exists yet.
+</ResponseField>
+
+<ResponseField name="progress.strugglingTopics" type="array">
+  Topic IDs or names where the Coder is underperforming.
+</ResponseField>
+
+<ResponseField name="activePlan" type="object | null">
+  Summary of the currently active AI-generated plan, or `null`.
+</ResponseField>
+
+<ResponseField name="notifications" type="object">
+  TL feedback messages.
+</ResponseField>
+
+<ResponseField name="notifications.unread" type="number">
+  Count of unread feedback items.
+</ResponseField>
+
+<ResponseField name="notifications.items" type="array">
+  Up to 5 most recent feedback entries.
+</ResponseField>
+
+<ResponseField name="riskFlags" type="array">
+  Up to 3 unresolved risk flags.
+</ResponseField>
+
+<ResponseField name="performanceTests" type="array">
+  Up to 3 most recent performance test results.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/dashboard \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/coder/plan`
+
+Returns the currently active complementary plan for the Coder, including completed days and the derived `currentDay`.
+
+**Auth required:** Yes — role `coder`
+
+**Response (200):**
+
+<ResponseField name="hasPlan" type="boolean">
+  `false` when no active plan exists.
+</ResponseField>
+
+<ResponseField name="plan" type="object | null">
+  Full plan object when `hasPlan` is `true`.
+</ResponseField>
+
+<ResponseField name="plan.id" type="number">
+  Plan database ID.
+</ResponseField>
+
+<ResponseField name="plan.planContent" type="object">
+  AI-generated plan structure with weeks and daily activities.
+</ResponseField>
+
+<ResponseField name="plan.completedDays" type="object">
+  Map of `{ "dayNumber": { "completedAt": "ISO date" } }`.
+</ResponseField>
+
+<ResponseField name="plan.currentDay" type="number">
+  First incomplete day number (1–20).
+</ResponseField>
+
+<ResponseField name="plan.isComplete" type="boolean">
+  `true` when all 20 days are completed.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/plan \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/coder/plan/request`
+
+Triggers generation of a new AI complementary plan. The response is immediate; the plan is generated asynchronously by the Python microservice and saved in the background.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:**
+
+<ParamField body="plan_type" type="string">
+  Plan type. Defaults to `interpretive`.
+</ParamField>
+
+<ParamField body="current_week" type="number">
+  Current Moodle week. Defaults to `1`.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="requested" type="boolean">
+  Always `true`.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Informs the frontend to poll for the plan.
+</ResponseField>
+
+<Note>
+  Poll `GET /api/coder/plan` every few seconds after calling this endpoint. The plan typically becomes available within 10–30 seconds depending on the AI microservice load.
+</Note>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/coder/plan/request \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"plan_type": "interpretive", "current_week": 2}'
+```
+
+---
+
+### `POST /api/coder/plan/:planId/day/:day/complete`
+
+Marks a specific day of a plan as completed. Awards Kairo score points. When all 20 days are completed, a bonus is awarded.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="planId" type="number" required>
+  ID of the active plan.
+</ParamField>
+
+<ParamField path="day" type="number" required>
+  Day number to mark complete. Must be between 1 and 20.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="completedDays" type="object">
+  Updated map of all completed days.
+</ResponseField>
+
+<ResponseField name="completedCount" type="number">
+  Total number of completed days.
+</ResponseField>
+
+<ResponseField name="nextDay" type="number | null">
+  Next incomplete day number, or `null` if the plan is complete.
+</ResponseField>
+
+<ResponseField name="isComplete" type="boolean">
+  `true` when all 20 days are completed.
+</ResponseField>
+
+<ResponseField name="kairoScore" type="number">
+  Updated Kairo score after points are awarded.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/coder/plan/42/day/3/complete \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/coder/plans/:planId`
+
+Returns the full details of a specific plan, including all associated activities.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="planId" type="number" required>
+  Plan ID. Must belong to the authenticated Coder.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="plan" type="object">
+  Full plan row with an `activities` array of `plan_activities` records.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/plans/42 \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/coder/exercise/generate`
+
+Generates a new coding exercise for the Coder via the AI microservice.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:** Exercise generation parameters (passed to AI microservice).
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/coder/exercise/generate \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"topic": "SQL joins", "difficulty": "intermediate"}'
+```
+
+---
+
+### `POST /api/coder/exercise/:exerciseId/submit`
+
+Submits a solution to a generated exercise.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="exerciseId" type="number" required>
+  ID of the exercise to submit.
+</ParamField>
+
+**Request body:**
+
+<ParamField body="codeSubmitted" type="string" required>
+  The Coder's solution code.
+</ParamField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/coder/exercise/7/submit \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"codeSubmitted": "SELECT * FROM orders JOIN customers ON ..."}'
+```
+
+---
+
+### `GET /api/coder/exercise/:exerciseId/submissions`
+
+Returns all prior submissions for a given exercise by the authenticated Coder.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="exerciseId" type="number" required>
+  Exercise ID.
+</ParamField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/exercise/7/submissions \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/coder/resources`
+
+Lists learning resources available to the Coder.
+
+**Auth required:** Yes — role `coder`
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/resources \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/coder/resource/:id/download`
+
+Returns a signed download URL for a PDF resource.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Resource ID.
+</ParamField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/resource/3/download \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/coder/resources/search`
+
+Searches available resources by keyword or topic.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:**
+
+<ParamField body="query" type="string" required>
+  Search term.
+</ParamField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/coder/resources/search \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"query": "SQL joins"}'
+```
+
+---
+
+### `PATCH /api/coder/activities/:id/complete`
+
+Marks a plan activity as completed and records a reflection and time spent.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Activity ID.
+</ParamField>
+
+**Request body:**
+
+<ParamField body="reflectionText" type="string">
+  Free-text reflection on the activity.
+</ParamField>
+
+<ParamField body="timeSpent" type="number">
+  Time spent on the activity in minutes.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="data" type="object">
+  The created or updated `activity_progress` record.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:3000/api/coder/activities/15/complete \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"reflectionText": "Practiced SQL joins using the Northwind DB.", "timeSpent": 45}'
+```
+
+---
+
+### `PATCH /api/coder/feedback/:id/read`
+
+Marks a TL feedback item as read and notifies the TL in real time via SSE.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Feedback (TL feedback record) ID.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on success.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:3000/api/coder/feedback/8/read \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/coder/milestones`
+
+Returns a list of module milestones with per-week average scores for the authenticated Coder.
+
+**Auth required:** Yes — role `coder`
+
+**Response (200):**
+
+<ResponseField name="milestones" type="array">
+  Ordered list of week records with `module_name`, `week_number`, `week_name`, and `average_score`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/milestones \
+  -b cookies.txt
+```

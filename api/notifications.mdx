@@ -1,0 +1,163 @@
+---
+title: "Notifications"
+description: "Endpoints for reading and managing user notifications."
+---
+
+Kairo uses two notification mechanisms:
+
+- **Server-Sent Events (SSE)** — a persistent HTTP stream that pushes notifications to the browser in real time.
+- **REST endpoints** — for listing, bulk-marking as read, and deleting individual notifications.
+
+All notification endpoints are mounted under `/api/notifications` and require authentication. There is no role restriction — both Coders and TLs can use these endpoints.
+
+<Note>
+  Notifications are written by the `notifyUser` service on the server side — for example, when a TL submits feedback, when a TL reviews a submission, or when an assignment is published.
+</Note>
+
+---
+
+### `GET /api/notifications/stream`
+
+Opens a persistent SSE connection. The server pushes JSON-encoded notification events as they occur for the authenticated user.
+
+**Auth required:** Yes
+
+**Response headers:**
+
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+**Initial event on connect:**
+
+```
+data: {"type":"CONNECTED"}
+```
+
+**Subsequent notification events:**
+
+```
+data: {"type":"notification","id":123,"title":"New Feedback","message":"...","notificationType":"feedback"}
+```
+
+<Warning>
+  The connection stays open until the client disconnects (tab close, navigation). The `X-Accel-Buffering: no` header is required to prevent nginx and Railway reverse proxies from buffering the stream.
+</Warning>
+
+**Example (browser):**
+
+```javascript
+const es = new EventSource('/api/notifications/stream', { withCredentials: true });
+es.onmessage = (e) => {
+  const data = JSON.parse(e.data);
+  console.log(data);
+};
+```
+
+---
+
+### `GET /api/notifications`
+
+Returns the 30 most recent notifications for the authenticated user, ordered by most recent first.
+
+**Auth required:** Yes
+
+**Response (200):**
+
+<ResponseField name="notifications" type="array">
+  List of notification objects.
+</ResponseField>
+
+<ResponseField name="notifications[].id" type="number">
+  Notification database ID.
+</ResponseField>
+
+<ResponseField name="notifications[].title" type="string">
+  Short notification title.
+</ResponseField>
+
+<ResponseField name="notifications[].message" type="string">
+  Full notification message body.
+</ResponseField>
+
+<ResponseField name="notifications[].type" type="string">
+  Notification category. Values include `feedback`, `feedback_read`, `assignment`, `tl_review`.
+</ResponseField>
+
+<ResponseField name="notifications[].is_read" type="boolean">
+  `false` for unread notifications.
+</ResponseField>
+
+<ResponseField name="notifications[].related_id" type="number | null">
+  ID of the related entity (e.g. feedback ID, submission ID, assignment ID).
+</ResponseField>
+
+<ResponseField name="notifications[].created_at" type="string">
+  ISO 8601 timestamp.
+</ResponseField>
+
+<ResponseField name="unread" type="number">
+  Count of unread notifications in the returned set.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/notifications \
+  -b cookies.txt
+```
+
+---
+
+### `POST /api/notifications/read`
+
+Marks all unread notifications for the authenticated user as read.
+
+**Auth required:** Yes
+
+**Request body:** None.
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` when the update is applied.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/notifications/read \
+  -b cookies.txt
+```
+
+---
+
+### `DELETE /api/notifications/:id`
+
+Permanently deletes a single notification. The notification must belong to the authenticated user.
+
+**Auth required:** Yes
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Notification ID to delete.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful deletion.
+</ResponseField>
+
+**Response (404):** Notification not found or does not belong to the current user.
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:3000/api/notifications/55 \
+  -b cookies.txt
+```

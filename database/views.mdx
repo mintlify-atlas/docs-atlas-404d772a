@@ -1,0 +1,204 @@
+---
+title: "Database views"
+description: "The two SQL views that power Kairo's dashboard data."
+---
+
+Kairo defines two PostgreSQL views in `schema.sql`. Both views are read-only aggregations that join multiple tables into a single flat result. They are used by the Node.js API to serve dashboard endpoints without writing complex multi-join queries in application code.
+
+<Note>
+Views do not bypass Row Level Security. Supabase evaluates RLS policies on the underlying base tables when a view is queried. A coder querying `v_coder_dashboard` will only see their own row because the `users` table policy restricts their access.
+</Note>
+
+---
+
+## `v_coder_dashboard`
+
+Aggregates each coder's soft-skills scores, current module progress, and plan activity completion into a single summary row. Used to populate the main coder dashboard.
+
+### SQL
+
+```sql
+CREATE VIEW v_coder_dashboard AS
+SELECT
+  u.id,
+  u.email,
+  u.full_name,
+  u.clan_id,
+  ssa.autonomy,
+  ssa.time_management,
+  ssa.learning_style,
+  m.name               AS module_name,
+  mp.current_week,
+  mp.average_score,
+  COUNT(DISTINCT pa.id) AS total_activities,
+  SUM(CASE WHEN ap.completed = TRUE THEN 1 ELSE 0 END) AS completed_activities,
+  ROUND(
+    (SUM(CASE WHEN ap.completed = TRUE THEN 1 ELSE 0 END)::NUMERIC /
+     NULLIF(COUNT(DISTINCT pa.id), 0)) * 100,
+    2
+  ) AS completion_percentage
+FROM users u
+LEFT JOIN soft_skills_assessment ssa ON u.id = ssa.coder_id
+LEFT JOIN moodle_progress mp         ON u.id = mp.coder_id
+LEFT JOIN modules m                  ON mp.module_id = m.id
+LEFT JOIN complementary_plans cp     ON u.id = cp.coder_id AND cp.is_active = TRUE
+LEFT JOIN plan_activities pa         ON cp.id = pa.plan_id
+LEFT JOIN activity_progress ap       ON pa.id = ap.activity_id AND ap.coder_id = u.id
+WHERE u.role = 'coder'
+GROUP BY
+  u.id, u.email, u.full_name, u.clan_id,
+  ssa.autonomy, ssa.time_management, ssa.learning_style,
+  m.name, mp.current_week, mp.average_score;
+
+COMMENT ON VIEW v_coder_dashboard IS 'Resumen del progreso de cada coder para su dashboard';
+```
+
+### Tables joined
+
+| Table | Join condition | Purpose |
+|---|---|---|
+| `users` | base table | Coder identity and clan |
+| `soft_skills_assessment` | `u.id = ssa.coder_id` | Autonomy, time management, learning style |
+| `moodle_progress` | `u.id = mp.coder_id` | Current module week and average score |
+| `modules` | `mp.module_id = m.id` | Module name |
+| `complementary_plans` | `u.id = cp.coder_id AND cp.is_active = TRUE` | Active plans only |
+| `plan_activities` | `cp.id = pa.plan_id` | All activities within active plans |
+| `activity_progress` | `pa.id = ap.activity_id AND ap.coder_id = u.id` | Per-coder completion state |
+
+### Columns returned
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `INT` | Coder's `users.id` |
+| `email` | `VARCHAR` | Coder's email address |
+| `full_name` | `VARCHAR` | Coder's display name |
+| `clan_id` | `VARCHAR` | Clan name, e.g. `Turing` |
+| `autonomy` | `INT` | Soft-skills autonomy score (1–5) |
+| `time_management` | `INT` | Soft-skills time management score (1–5) |
+| `learning_style` | `learning_style_enum` | Dominant learning style |
+| `module_name` | `VARCHAR` | Current module name |
+| `current_week` | `INT` | Week number currently in progress |
+| `average_score` | `DECIMAL` | Academic average (0–100) |
+| `total_activities` | `BIGINT` | Total activities across all active plans |
+| `completed_activities` | `BIGINT` | Number of activities marked complete |
+| `completion_percentage` | `NUMERIC` | `completed / total × 100`, rounded to 2 decimal places; `NULL` if no activities exist |
+
+### Example query
+
+```sql
+-- Fetch the dashboard row for the currently authenticated coder
+SELECT *
+FROM v_coder_dashboard
+WHERE id = auth.uid()::int;
+```
+
+Example result:
+
+| id | full_name | clan_id | autonomy | module_name | current_week | average_score | total_activities | completed_activities | completion_percentage |
+|---|---|---|---|---|---|---|---|---|---|
+| 4 | Ana López | Turing | 4 | Fundamentos de Python | 3 | 88.00 | 12 | 9 | 75.00 |
+
+### Application usage
+
+The Node.js API queries this view in the `/api/coder/dashboard` endpoint to build the coder's home screen in a single database round-trip. The frontend uses `completion_percentage` to render the progress ring and `autonomy` / `learning_style` to display the soft-skills summary card.
+
+---
+
+## `v_coder_risk_analysis`
+
+Calculates each coder's current flagged risk level (from `risk_flags`) alongside a freshly computed risk level derived from their autonomy score and academic average. Used by Team Leaders to triage at-risk coders.
+
+### SQL
+
+```sql
+CREATE VIEW v_coder_risk_analysis AS
+SELECT
+  u.id,
+  u.email,
+  u.full_name,
+  ssa.autonomy,
+  ssa.time_management,
+  mp.average_score,
+  COALESCE(rf.risk_level, 'low'::risk_level_enum) AS current_risk_level,
+  CASE
+    WHEN ssa.autonomy <= 2 AND mp.average_score < 70 THEN 'high'::risk_level_enum
+    WHEN ssa.autonomy <= 2 OR  mp.average_score < 70 THEN 'medium'::risk_level_enum
+    ELSE 'low'::risk_level_enum
+  END AS calculated_risk_level,
+  COUNT(DISTINCT pa.id) AS total_activities,
+  SUM(CASE WHEN ap.completed = TRUE THEN 1 ELSE 0 END) AS completed_activities
+FROM users u
+LEFT JOIN soft_skills_assessment ssa ON u.id = ssa.coder_id
+LEFT JOIN moodle_progress mp         ON u.id = mp.coder_id
+LEFT JOIN risk_flags rf              ON u.id = rf.coder_id AND rf.resolved = FALSE
+LEFT JOIN complementary_plans cp     ON u.id = cp.coder_id AND cp.is_active = TRUE
+LEFT JOIN plan_activities pa         ON cp.id = pa.plan_id
+LEFT JOIN activity_progress ap       ON pa.id = ap.activity_id AND ap.coder_id = u.id
+WHERE u.role = 'coder'
+GROUP BY
+  u.id, u.email, u.full_name,
+  ssa.autonomy, ssa.time_management,
+  mp.average_score, rf.risk_level;
+
+COMMENT ON VIEW v_coder_risk_analysis IS 'Análisis de riesgo de cada coder para el TL';
+```
+
+### Tables joined
+
+| Table | Join condition | Purpose |
+|---|---|---|
+| `users` | base table | Coder identity |
+| `soft_skills_assessment` | `u.id = ssa.coder_id` | Autonomy and time management scores |
+| `moodle_progress` | `u.id = mp.coder_id` | Academic average |
+| `risk_flags` | `u.id = rf.coder_id AND rf.resolved = FALSE` | Active (unresolved) risk flags only |
+| `complementary_plans` | `u.id = cp.coder_id AND cp.is_active = TRUE` | Active plans |
+| `plan_activities` | `cp.id = pa.plan_id` | Plan activities |
+| `activity_progress` | `pa.id = ap.activity_id AND ap.coder_id = u.id` | Completion state |
+
+### Columns returned
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | `INT` | Coder's `users.id` |
+| `email` | `VARCHAR` | Coder's email |
+| `full_name` | `VARCHAR` | Coder's display name |
+| `autonomy` | `INT` | Autonomy score (1–5) |
+| `time_management` | `INT` | Time management score (1–5) |
+| `average_score` | `DECIMAL` | Academic average (0–100) |
+| `current_risk_level` | `risk_level_enum` | Most recent unresolved `risk_flags` value; defaults to `low` if no open flag exists |
+| `calculated_risk_level` | `risk_level_enum` | Computed from autonomy and average: `high` if both indicators are poor, `medium` if one, `low` otherwise |
+| `total_activities` | `BIGINT` | Total activities across active plans |
+| `completed_activities` | `BIGINT` | Completed activities |
+
+### Risk calculation logic
+
+The `calculated_risk_level` column applies a two-variable rule:
+
+| Condition | Result |
+|---|---|
+| `autonomy <= 2` **and** `average_score < 70` | `high` |
+| `autonomy <= 2` **or** `average_score < 70` | `medium` |
+| Neither condition | `low` |
+
+The difference between `current_risk_level` and `calculated_risk_level` is useful for detecting stale flags: if `calculated_risk_level` is `high` but `current_risk_level` is `low`, no active flag exists yet and one should be created.
+
+### Example query
+
+```sql
+-- All coders with a high calculated risk level
+SELECT id, full_name, autonomy, average_score, calculated_risk_level
+FROM v_coder_risk_analysis
+WHERE calculated_risk_level = 'high'
+ORDER BY average_score ASC;
+```
+
+Example result:
+
+| id | full_name | autonomy | average_score | calculated_risk_level |
+|---|---|---|---|---|
+| 7 | Luis González | 2 | 58.00 | high |
+| 3 | Juan Pérez | 2 | 65.50 | high |
+
+### Application usage
+
+The Node.js TL dashboard API (`/api/tl/risk-analysis`) queries this view to render the risk board. Team Leaders can filter by `calculated_risk_level = 'high'` to surface the coders who need immediate intervention, and compare `current_risk_level` against `calculated_risk_level` to identify coders whose situation has changed since the last flag was raised.

@@ -1,0 +1,361 @@
+---
+title: "Authentication"
+description: "Endpoints for login, registration, logout, and OAuth callbacks."
+---
+
+All auth endpoints are served under `/api/auth`. Public endpoints require no session; protected endpoints require a valid `riwi.sid` session cookie.
+
+<Info>
+  OTP-related endpoints (`/verify-otp`, `/resend-otp`) are subject to the OTP rate limiter: 5 requests per IP per 10 minutes.
+</Info>
+
+---
+
+### `POST /api/auth/register`
+
+Creates a new user account and sends a 6-digit OTP to the provided email address. The account is not activated until the OTP is verified.
+
+**Auth required:** No
+
+**Request body:**
+
+<ParamField body="email" type="string" required>
+  User email address. Must be unique and not yet OTP-verified.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Plain-text password. Hashed with bcrypt (12 rounds) before storage.
+</ParamField>
+
+<ParamField body="fullName" type="string" required>
+  User's display name.
+</ParamField>
+
+<ParamField body="role" type="string">
+  Account role. One of `coder` or `tl`. Defaults to `coder`.
+</ParamField>
+
+<ParamField body="clanId" type="string">
+  Clan identifier. Optional at registration; can be set during onboarding.
+</ParamField>
+
+**Response (201):**
+
+<ResponseField name="message" type="string">
+  Human-readable confirmation that the verification code was sent.
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  The email address the OTP was sent to.
+</ResponseField>
+
+<ResponseField name="ttl" type="number">
+  OTP validity in seconds (900 = 15 minutes).
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "coder@riwi.io", "password": "secret", "fullName": "Ana Torres", "role": "coder"}'
+```
+
+---
+
+### `POST /api/auth/verify-otp`
+
+Verifies the OTP code sent during registration. On success, activates the account, creates a session, and sets the `riwi.sid` cookie.
+
+**Auth required:** No
+
+**Request body:**
+
+<ParamField body="email" type="string" required>
+  The email address that received the OTP.
+</ParamField>
+
+<ParamField body="code" type="string" required>
+  The 6-digit verification code.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful verification.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Authenticated user object.
+</ResponseField>
+
+<ResponseField name="user.id" type="number">
+  Database user ID.
+</ResponseField>
+
+<ResponseField name="user.fullName" type="string">
+  User's display name.
+</ResponseField>
+
+<ResponseField name="user.role" type="string">
+  `coder` or `tl`.
+</ResponseField>
+
+<ResponseField name="user.clanId" type="string | null">
+  Assigned clan identifier, or `null` if not yet set.
+</ResponseField>
+
+<ResponseField name="user.firstLogin" type="boolean">
+  `true` if the user has not yet completed the onboarding diagnostic.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/verify-otp \
+  -H "Content-Type: application/json" \
+  -d '{"email": "coder@riwi.io", "code": "482910"}'
+```
+
+---
+
+### `POST /api/auth/resend-otp`
+
+Invalidates any pending OTP codes for the given email and sends a fresh one.
+
+**Auth required:** No
+
+<Warning>
+  This endpoint is rate-limited to 5 requests per IP per 10 minutes.
+</Warning>
+
+**Request body:**
+
+<ParamField body="email" type="string" required>
+  The email address to resend the code to. The account must exist and must not already be OTP-verified.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful dispatch.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Confirmation message.
+</ResponseField>
+
+<ResponseField name="ttl" type="number">
+  New code validity in seconds.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/resend-otp \
+  -H "Content-Type: application/json" \
+  -d '{"email": "coder@riwi.io"}'
+```
+
+---
+
+### `POST /api/auth/login`
+
+Authenticates a user with email and password. Creates a session on success.
+
+**Auth required:** No
+
+<Note>
+  OAuth users (Google/GitHub) do not have a bcrypt-hashed password and cannot log in through this endpoint. They must use the OAuth flow.
+</Note>
+
+**Request body:**
+
+<ParamField body="email" type="string" required>
+  Registered email address.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Plain-text password.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful authentication.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Authenticated user object (same shape as `verify-otp` response).
+</ResponseField>
+
+**Response (403) — OTP not verified:**
+
+```json
+{
+  "requiresOtp": true,
+  "error": "Please verify your email first.",
+  "email": "coder@riwi.io"
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -c cookies.txt \
+  -d '{"email": "coder@riwi.io", "password": "secret"}'
+```
+
+---
+
+### `GET /api/auth/check`
+
+Returns authentication status for the current session. Also available as `GET /api/auth/me` (requires auth).
+
+**Auth required:** No (returns `{ authenticated: false }` if unauthenticated)
+
+**Response (200):**
+
+<ResponseField name="authenticated" type="boolean">
+  `true` when the session is valid.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Present only when `authenticated` is `true`. Same user shape as login response, plus `email` and `clanId`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/auth/check \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/auth/me`
+
+Alias for `GET /api/auth/check` but requires an authenticated session.
+
+**Auth required:** Yes
+
+---
+
+### `POST /api/auth/logout`
+
+Destroys the current session and clears the `riwi.sid` cookie.
+
+**Auth required:** Yes
+
+**Response (200):**
+
+<ResponseField name="message" type="string">
+  `"Session closed."`
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:3000/api/auth/logout \
+  -b cookies.txt
+```
+
+---
+
+### `PATCH /api/auth/profile`
+
+Updates the authenticated user's display name or clan.
+
+**Auth required:** Yes
+
+**Request body** (at least one field required):
+
+<ParamField body="fullName" type="string">
+  New display name.
+</ParamField>
+
+<ParamField body="clanId" type="string">
+  New clan identifier.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful update.
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Updated user object with `id`, `email`, `fullName`, `role`, `clanId`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:3000/api/auth/profile \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"fullName": "Ana Torres Reyes"}'
+```
+
+---
+
+### `PATCH /api/auth/complete-onboarding`
+
+Marks the authenticated Coder's `first_login` flag as `false`, indicating they have completed the onboarding diagnostic. Optionally assigns a clan.
+
+**Auth required:** Yes — role `coder`
+
+**Request body:**
+
+<ParamField body="clanId" type="string">
+  Clan to assign at onboarding completion. Optional.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful update.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  `"Onboarding completed."`
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:3000/api/auth/complete-onboarding \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"clanId": "turing"}'
+```
+
+---
+
+## OAuth flows
+
+### `GET /api/auth/google`
+
+Redirects the browser to Google's OAuth 2.0 authorization page. Use this as the `href` of a "Sign in with Google" button.
+
+**Auth required:** No
+
+### `GET /api/auth/google/callback`
+
+Google redirects here after authorization. On success, creates a session and redirects to the Coder dashboard (or onboarding if `first_login` is true). On failure, redirects to `/login.html?error=google_failed`.
+
+### `GET /api/auth/github`
+
+Redirects the browser to GitHub's OAuth authorization page.
+
+**Auth required:** No
+
+### `GET /api/auth/github/callback`
+
+GitHub redirects here after authorization. Behavior mirrors the Google callback.
+
+<Note>
+  OAuth callback endpoints perform a browser redirect, not a JSON response. Do not call them with `fetch` or `curl` — open them in the browser.
+</Note>

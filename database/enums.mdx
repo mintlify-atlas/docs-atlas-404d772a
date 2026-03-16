@@ -1,0 +1,172 @@
+---
+title: "Enum types"
+description: "The 8 custom PostgreSQL ENUM types used in the Kairo schema."
+---
+
+Kairo defines 8 PostgreSQL ENUM types in `schema.sql`. Using ENUMs rather than plain `VARCHAR` columns means the database rejects invalid values before any application code runs.
+
+<Note>
+To add a new value to an existing ENUM, use `ALTER TYPE enum_name ADD VALUE 'new_value';`. You cannot remove or rename values without dropping and recreating the type (which requires a full schema migration).
+</Note>
+
+---
+
+## `role_enum`
+
+Identifies the two user roles in the platform.
+
+```sql
+CREATE TYPE role_enum AS ENUM ('coder', 'tl');
+```
+
+| Value | Meaning |
+|---|---|
+| `coder` | A bootcamp student. Can view their own data, complete activities, and submit evidence. |
+| `tl` | A Team Leader. Can view all coders in their clan, generate plans, send feedback, and access AI reports. |
+
+**Used in:** `users.role`
+
+---
+
+## `learning_style_enum`
+
+Captures a coder's dominant learning modality, determined during onboarding.
+
+```sql
+CREATE TYPE learning_style_enum AS ENUM ('visual', 'auditory', 'kinesthetic', 'mixed');
+```
+
+| Value | Meaning |
+|---|---|
+| `visual` | Learns best through diagrams, charts, and written material |
+| `auditory` | Learns best through listening, discussion, and verbal explanation |
+| `kinesthetic` | Learns best through hands-on practice and building things |
+| `mixed` | No single dominant style; benefits from varied formats |
+
+**Used in:** `soft_skills_assessment.learning_style`
+
+The AI uses this value when generating personalized plans to select appropriate activity formats.
+
+---
+
+## `activity_type_enum`
+
+Classifies how much guidance a plan activity provides.
+
+```sql
+CREATE TYPE activity_type_enum AS ENUM ('guided', 'semi_guided', 'autonomous');
+```
+
+| Value | Meaning |
+|---|---|
+| `guided` | Step-by-step instructions provided; suitable for coders with low autonomy scores |
+| `semi_guided` | Partial instructions with room for independent decision-making |
+| `autonomous` | Open-ended task; the coder decides how to approach the goal |
+
+**Used in:** `plan_activities.activity_type`
+
+The AI selects activity types based on a coder's `autonomy` score from `soft_skills_assessment`. Coders with low autonomy receive more `guided` activities.
+
+---
+
+## `feedback_type_enum`
+
+Categorizes the context in which a Team Leader sends feedback.
+
+```sql
+CREATE TYPE feedback_type_enum AS ENUM ('weekly', 'activity', 'general');
+```
+
+| Value | Meaning |
+|---|---|
+| `weekly` | End-of-week check-in message |
+| `activity` | Feedback tied to a specific plan activity (linked via `tl_feedback.plan_id`) |
+| `general` | Freeform message not tied to a specific period or activity |
+
+**Used in:** `tl_feedback.feedback_type`
+
+---
+
+## `risk_level_enum`
+
+Represents the severity of a coder's risk signal.
+
+```sql
+CREATE TYPE risk_level_enum AS ENUM ('low', 'medium', 'high');
+```
+
+| Value | Meaning |
+|---|---|
+| `low` | No significant concern; coder is progressing normally |
+| `medium` | One risk indicator present (low autonomy **or** average score below 70) |
+| `high` | Multiple indicators present (low autonomy **and** average score below 70) |
+
+**Used in:** `risk_flags.risk_level`, `ai_reports.risk_level`, computed column in `v_coder_risk_analysis`
+
+The `v_coder_risk_analysis` view derives the calculated risk level with this logic:
+
+```sql
+CASE
+  WHEN ssa.autonomy <= 2 AND mp.average_score < 70 THEN 'high'
+  WHEN ssa.autonomy <= 2 OR  mp.average_score < 70 THEN 'medium'
+  ELSE 'low'
+END AS calculated_risk_level
+```
+
+---
+
+## `report_target_enum`
+
+Specifies the scope of an AI-generated report.
+
+```sql
+CREATE TYPE report_target_enum AS ENUM ('coder', 'clan', 'cohort');
+```
+
+| Value | Meaning |
+|---|---|
+| `coder` | Report covers a single coder; `target_id` is the coder's `users.id` |
+| `clan` | Report covers all coders in a clan; `target_id` identifies the clan |
+| `cohort` | Report covers an entire bootcamp cohort |
+
+**Used in:** `ai_reports.target_type`
+
+---
+
+## `ai_agent_enum`
+
+Identifies which AI agent produced a given log entry or output.
+
+```sql
+CREATE TYPE ai_agent_enum AS ENUM ('learning_plan', 'report_generator', 'risk_detector');
+```
+
+| Value | Meaning | Endpoint |
+|---|---|---|
+| `learning_plan` | Generates a personalized 4-week roadmap from soft-skills and Moodle data | `POST /generate-plan` |
+| `report_generator` | Produces executive summaries for Team Leaders | `POST /generate-report` |
+| `risk_detector` | Identifies at-risk patterns and generates prioritized focus cards | `POST /generate-focus-cards` |
+
+**Used in:** `ai_generation_log.agent_type`
+
+Every AI call writes one row to `ai_generation_log` with the matching `agent_type` value.
+
+---
+
+## `priority_level_enum`
+
+Controls the display order of the 6 Cards on the coder dashboard.
+
+```sql
+CREATE TYPE priority_level_enum AS ENUM ('low', 'medium', 'high');
+```
+
+| Value | Meaning | Cards per generation |
+|---|---|---|
+| `high` | Top priority — must be addressed first | 2 |
+| `medium` | Standard priority | 2 |
+| `low` | Supplementary / enrichment | 2 |
+
+**Used in:** `complementary_plans.priority_level`
+
+The AI always writes exactly 6 `complementary_plans` rows per generation: 2 high, 2 medium, and 2 low. The frontend queries with `ORDER BY priority_level DESC` to show high-priority cards at the top.

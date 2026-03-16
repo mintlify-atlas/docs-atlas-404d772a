@@ -1,0 +1,127 @@
+---
+title: "Focus cards"
+description: "The 6 prioritized learning cards at the heart of each Coder's study plan."
+---
+
+Focus cards are the visible surface of your learning plan. Each plan always contains exactly **6 cards**, distributed across three priority levels. Cards tell you what to study, why it matters, and how to practice it — all tuned to your learning style.
+
+## The priority system
+
+Every set of 6 cards follows a fixed distribution:
+
+<CardGroup cols={3}>
+  <Card title="2 High priority" icon="circle-exclamation">
+    Target your struggling topics and the soft skill dimension with your lowest score. These are the most urgent gaps to close.
+  </Card>
+  <Card title="2 Medium priority" icon="circle-dot">
+    Cover core module topics that need reinforcement. You understand the basics but need more practice depth.
+  </Card>
+  <Card title="2 Low priority" icon="circle">
+    Enrichment topics that extend your knowledge beyond the minimum. Work on these once high and medium cards are progressing.
+  </Card>
+</CardGroup>
+
+The priority order is defined by the `priority_level_enum` type in the database:
+
+```sql
+CREATE TYPE priority_level_enum AS ENUM ('low', 'medium', 'high');
+```
+
+Cards are sorted `high → medium → low` when displayed in the UI.
+
+## What a focus card contains
+
+Each card includes:
+
+| Field | Description |
+|-------|-------------|
+| `topic` | The exact module topic or soft skill the card addresses |
+| `title` | An action-oriented title describing what you'll achieve |
+| `theory` | A 3–4 sentence explanation adapted to your learning style |
+| `practice.description` | What you should do in approximately 20 minutes |
+| `practice.example` | A concrete code snippet or step-by-step walkthrough |
+| `pro_tips` | Two specific tips to accelerate your understanding |
+
+The AI adapts the `theory` text based on your `learning_style`. A visual learner receives diagram-oriented explanations; a kinesthetic learner gets hands-on instructions first.
+
+## Daily activities structure
+
+Each card expands to reveal **daily activities** — one for each day within the card's scope. Activities are stored in the `plan_activities` table:
+
+```sql
+CREATE TABLE plan_activities (
+  id                    SERIAL PRIMARY KEY,
+  plan_id               INT NOT NULL,
+  day_number            INT NOT NULL,
+  title                 VARCHAR(200) NOT NULL,
+  description           TEXT,
+  estimated_time_minutes INT,
+  activity_type         activity_type_enum,
+  skill_focus           VARCHAR(100)
+);
+```
+
+### Activity type progression
+
+Activities follow a deliberate autonomy ramp across the 4 weeks:
+
+```sql
+CREATE TYPE activity_type_enum AS ENUM ('guided', 'semi_guided', 'autonomous');
+```
+
+| Type | When it appears | What it means |
+|------|----------------|---------------|
+| `guided` | Weeks 1–2 | Step-by-step instructions with explicit hints provided |
+| `semi_guided` | Week 3 | Partial guidance — you fill in key pieces yourself |
+| `autonomous` | Week 4 | No hints; you solve the problem independently |
+
+This progression mirrors Riwi's bootcamp pedagogy: scaffolded early, then progressively removed.
+
+### skill_focus field
+
+The `skill_focus` column labels which capability the activity targets — for example `"SQL joins"`, `"time_management"`, or `"async/await"`. Your TL can filter activities by `skill_focus` to see which areas you're spending time on.
+
+## Navigating cards in the UI
+
+On the **AI Trainer** screen:
+
+<Steps>
+  <Step title="Select a week">
+    Use the week tabs at the top of the plan view (Week 1–4) to jump to any week.
+  </Step>
+  <Step title="Select a day">
+    Click a day dot in the row beneath the week tabs. The dot fills in once that day is marked complete.
+  </Step>
+  <Step title="Review the day's cards">
+    The screen shows your **technical card** (blue stripe) and **soft skill card** (purple stripe) for that day.
+  </Step>
+  <Step title="Open the exercise">
+    Click **"Ejercicio del día"** on the technical card to open the embedded code editor with a personalized exercise generated for that activity.
+  </Step>
+  <Step title="Mark the day complete">
+    Click the **"Completado"** button on the technical card. Both cards for that day are marked done and the day dot fills in.
+  </Step>
+</Steps>
+
+## Marking activities complete
+
+When you click **"Completado"**, the frontend sends:
+
+```http
+POST /api/coder/plan/:planId/day/:day/complete
+```
+
+The backend writes a `completed_at` timestamp into `complementary_plans.completed_days` (a JSONB object keyed by day number) and inserts rows into `activity_progress` for every `plan_activity` on that day:
+
+```sql
+INSERT INTO activity_progress (activity_id, coder_id, completed, completed_at)
+VALUES ($1, $2, true, NOW())
+ON CONFLICT (activity_id, coder_id)
+DO UPDATE SET completed = true, completed_at = NOW();
+```
+
+Completing each day also awards **Kairo Score points** (tracked in `users.kairo_score`). Finishing all 20 days awards a plan-completion bonus.
+
+<Note>
+  After completing all 20 days, a **"¡Completaste el plan!"** banner appears. Your next plan is generated automatically the following Monday, or you can request one immediately.
+</Note>

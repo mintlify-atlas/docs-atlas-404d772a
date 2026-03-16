@@ -1,0 +1,72 @@
+---
+title: "Introduction"
+description: "Kairo is an AI-powered personalized learning platform built for Riwi bootcamp students and Team Leaders."
+---
+
+## What is Kairo?
+
+Kairo is an intelligent learning ecosystem designed to bridge the gap between the fast pace of Riwi's intensive 11-month bootcamp and each Coder's individual learning speed. By combining academic performance data from Moodle with soft-skills self-assessments, Kairo generates dynamic, personalized 4-week growth paths — ensuring no Coder is left behind.
+
+The platform serves two distinct user roles:
+
+- **Coders** — bootcamp students who receive personalized study plans, AI tutoring, and daily activity tracking
+- **Team Leaders (TL)** — instructors and mentors who monitor cohort health, review AI-generated reports, and provide direct feedback
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get Kairo running locally in minutes
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the hybrid Node.js + Python system
+  </Card>
+  <Card title="Coder Features" icon="graduation-cap" href="/features/onboarding">
+    Explore the personalized learning experience
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore all API endpoints
+  </Card>
+</CardGroup>
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Adaptive learning plans" icon="brain">
+    AI generates custom 4-week study plans based on Moodle scores and soft-skills assessments using Groq-powered LLMs.
+  </Card>
+  <Card title="Focus cards" icon="cards-blank">
+    Six prioritized learning cards (2 high, 2 medium, 2 low priority) distill the most critical topics for each Coder.
+  </Card>
+  <Card title="AI Trainer chat" icon="messages">
+    An in-platform conversational AI tutor helps Coders work through difficult concepts in real time.
+  </Card>
+  <Card title="Risk detection" icon="triangle-exclamation">
+    Automatic risk flagging identifies at-risk students before academic failure occurs, alerting Team Leaders proactively.
+  </Card>
+  <Card title="TL analytics dashboard" icon="chart-line">
+    Team Leaders see clan-level performance metrics, risk flags, and AI-generated executive reports per student or cohort.
+  </Card>
+  <Card title="Activity tracking" icon="circle-check">
+    Coders log progress on daily plan activities and submit evidence (files or links) directly through the platform.
+  </Card>
+</CardGroup>
+
+## Architecture at a glance
+
+Kairo uses a hybrid backend architecture:
+
+| Service | Technology | Responsibility |
+|---|---|---|
+| API Gateway | Node.js + Express | Auth, business logic, session management, EJS templates |
+| AI Microservice | Python + FastAPI | LLM inference, plan generation, embeddings, RAG search |
+| Database | PostgreSQL (Supabase) | Users, plans, progress, risk flags, AI logs |
+| Frontend | Vanilla JS + Bootstrap 5 | Coder and TL multi-page application |
+
+## The team
+
+Kairo was built by the Kairo team at Riwi:
+
+- **Héctor Rios** — Backend Lead & Documentation
+- **Miguel Calle** — Database Architect
+- **Duvan Piedrahita** — Frontend Engineer (Coder Experience)
+- **Cesar Rios** — Frontend Engineer (TL Analytics) & UX/UI
+- **Camilo Guenge** — QA Engineer & AI Specialist

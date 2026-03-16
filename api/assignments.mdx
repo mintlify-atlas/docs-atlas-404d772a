@@ -1,0 +1,265 @@
+---
+title: "Assignments"
+description: "Endpoints for managing exercises, submissions, and activity assignments."
+---
+
+Kairo has two overlapping assignment concepts:
+
+- **Assignments** — TL-created activities (PDF or repository link) distributed to a clan or all Coders. Mounted under `/api/tl/assignment` (TL write) and `/api/coder/assignments` (Coder read).
+- **Exercises** — AI-generated coding exercises linked to a Coder's complementary plan. Available within the `/api/coder/exercise` prefix.
+
+<Info>
+  Assignment file uploads are limited to PDF files. Maximum file size is 20 MB. File storage uses Supabase Storage (`assignment-files` bucket).
+</Info>
+
+---
+
+## TL assignment endpoints
+
+### `POST /api/tl/assignment`
+
+Creates a new assignment and distributes it to the target Coders. Sends an SSE notification to every affected Coder.
+
+**Auth required:** Yes — role `tl`
+
+**Request:** `multipart/form-data` (when `contentType` is `pdf`) or `application/json` (when `contentType` is `repo`).
+
+<ParamField body="title" type="string" required>
+  Assignment title.
+</ParamField>
+
+<ParamField body="contentType" type="string" required>
+  `"pdf"` or `"repo"`.
+</ParamField>
+
+<ParamField body="scope" type="string" required>
+  `"clan"` to target only the TL's clan, or `"all"` to target every active Coder.
+</ParamField>
+
+<ParamField body="moduleId" type="number">
+  Optional module association.
+</ParamField>
+
+<ParamField body="deadline" type="string">
+  ISO 8601 deadline date. Optional.
+</ParamField>
+
+<ParamField body="repoUrl" type="string">
+  Required when `contentType` is `"repo"`. Public repository URL.
+</ParamField>
+
+<ParamField body="file" type="file">
+  Required when `contentType` is `"pdf"`. Must be a PDF, max 20 MB.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful creation.
+</ResponseField>
+
+<ResponseField name="assignmentId" type="number">
+  Database ID of the created assignment.
+</ResponseField>
+
+<ResponseField name="notified" type="number">
+  Count of Coders who received an SSE notification.
+</ResponseField>
+
+**Example (repo assignment):**
+
+```bash
+curl -X POST http://localhost:3000/api/tl/assignment \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"title": "Sprint 3 challenge", "contentType": "repo", "scope": "clan", "repoUrl": "https://github.com/riwi/sprint3"}'
+```
+
+**Example (PDF assignment):**
+
+```bash
+curl -X POST http://localhost:3000/api/tl/assignment \
+  -b cookies.txt \
+  -F "title=Week 4 reading" \
+  -F "contentType=pdf" \
+  -F "scope=clan" \
+  -F "file=@/path/to/brief.pdf"
+```
+
+---
+
+### `GET /api/tl/assignments`
+
+Returns all active assignments created by the authenticated TL, with module name.
+
+**Auth required:** Yes — role `tl`
+
+**Response (200):**
+
+<ResponseField name="assignments" type="array">
+  List of assignment records. Each includes `id`, `title`, `content_type`, `scope`, `module_name`, `created_at`, `deadline`, `repo_url`, `file_name`.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/tl/assignments \
+  -b cookies.txt
+```
+
+---
+
+### `DELETE /api/tl/assignment/:id`
+
+Soft-deletes an assignment (sets `is_active = false`). Only the TL who created it can delete it.
+
+**Auth required:** Yes — role `tl`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Assignment ID to delete.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="success" type="boolean">
+  `true` on successful deletion.
+</ResponseField>
+
+**Response (404):** Assignment not found or the authenticated TL is not its owner.
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:3000/api/tl/assignment/7 \
+  -b cookies.txt
+```
+
+---
+
+## Coder assignment endpoints
+
+### `GET /api/coder/assignments`
+
+Returns all active assignments visible to the authenticated Coder — both clan-scoped and global (`scope = 'all'`) assignments.
+
+**Auth required:** Yes — role `coder`
+
+**Response (200):**
+
+<ResponseField name="assignments" type="array">
+  List of assignment records with `module_name` and `tl_name` joined.
+</ResponseField>
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/assignments \
+  -b cookies.txt
+```
+
+---
+
+### `GET /api/coder/assignment/:id/download`
+
+Generates a 1-hour signed download URL for a PDF assignment file. The Coder must have access to the assignment (same clan or global scope).
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="id" type="number" required>
+  Assignment ID.
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="url" type="string">
+  Signed URL for direct PDF download (expires in 1 hour).
+</ResponseField>
+
+<ResponseField name="fileName" type="string">
+  Original uploaded file name.
+</ResponseField>
+
+**Response (400):** Assignment exists but has no PDF.
+
+**Response (404):** Assignment not found or Coder does not have access.
+
+**Example:**
+
+```bash
+curl http://localhost:3000/api/coder/assignment/7/download \
+  -b cookies.txt
+```
+
+---
+
+## Shared notification endpoints
+
+These endpoints are mounted directly on `/api` and are accessible to both Coders and TLs.
+
+### `GET /api/notifications`
+
+Returns up to 30 notifications for the authenticated user.
+
+**Auth required:** Yes
+
+<Note>
+  This endpoint is also available at `GET /api/notifications` under the dedicated notifications router. Both return the same data from the same `notifications` table.
+</Note>
+
+---
+
+### `POST /api/notifications/read`
+
+Marks all notifications for the authenticated user as read.
+
+**Auth required:** Yes
+
+---
+
+## Exercise endpoints
+
+Exercises are AI-generated coding challenges linked to a Coder's complementary plan. These endpoints are also accessible via the `/api/coder/exercise` prefix.
+
+### `POST /api/coder/exercise/generate`
+
+Requests generation of a new coding exercise. Delegates to the AI microservice.
+
+**Auth required:** Yes — role `coder`
+
+---
+
+### `POST /api/coder/exercise/:exerciseId/submit`
+
+Submits a solution to a specific exercise.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="exerciseId" type="number" required>
+  Exercise to submit a solution for.
+</ParamField>
+
+**Request body:**
+
+<ParamField body="codeSubmitted" type="string" required>
+  The Coder's solution.
+</ParamField>
+
+---
+
+### `GET /api/coder/exercise/:exerciseId/submissions`
+
+Returns all past submissions the Coder has made for a given exercise.
+
+**Auth required:** Yes — role `coder`
+
+**Path parameters:**
+
+<ParamField path="exerciseId" type="number" required>
+  Exercise ID.
+</ParamField>

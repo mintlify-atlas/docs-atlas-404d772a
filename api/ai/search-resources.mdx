@@ -1,0 +1,198 @@
+---
+title: "Search resources"
+description: "POST /search-resources — Search over TL-uploaded learning resources for a clan."
+---
+
+## Overview
+
+`POST /search-resources` finds learning resources that match a given topic for a specific clan. Resources are uploaded by Team Leaders and stored in Supabase with metadata (`title`, `preview_text`, `storage_path`). The search runs a **text-based match** against `title` and `preview_text` — if no results are found, it falls back to returning any active resources for the clan and module.
+
+<Note>
+  The microservice includes a `sentence-transformers` embedding model (`all-MiniLM-L6-v2`, 384 dimensions) loaded at startup for semantic vector search. The `embed_text()` and `model_ready()` functions in `embedding_service.py` are available internally, but the current `/search-resources` router uses **text search** as the primary strategy and the embedding model as a future upgrade path. Check `GET /health` → `"embeddings"` field to see whether the model loaded successfully.
+</Note>
+
+<Warning>
+  This endpoint does **not** call the LLM. Response times are typically under **500ms**. However, if the Supabase query is slow (large resource table), allow up to 3 seconds.
+</Warning>
+
+---
+
+## Endpoint
+
+```
+POST /search-resources
+```
+
+---
+
+## Request body
+
+<ParamField body="topic" type="string" required>
+  The topic or keyword to search for (e.g. `"JOINs"`, `"window functions"`, `"flexbox"`). Matched case-insensitively against resource `title` and then `preview_text` using SQL `ILIKE`.
+</ParamField>
+
+<ParamField body="clan_id" type="string" required>
+  The clan identifier string (e.g. `"Alpha"`). Resources are scoped to a clan — coders only see resources uploaded by their own TL.
+</ParamField>
+
+<ParamField body="module_id" type="integer">
+  Optional. When provided, results are additionally filtered to resources that belong to this module.
+</ParamField>
+
+<ParamField body="limit" type="integer" default="3">
+  Maximum number of resources to return.
+</ParamField>
+
+<ParamField body="coder_id" type="integer">
+  Optional. The coder's user ID. Accepted but not currently used for filtering — reserved for future personalization.
+</ParamField>
+
+---
+
+## Search strategy
+
+The endpoint follows a **two-stage fallback** strategy:
+
+1. **Title match**: runs `ILIKE '%{topic}%'` on `resources.title` filtered by `clan_id` and optionally `module_id`
+2. **Preview text match**: if step 1 returns no results, runs `ILIKE '%{topic}%'` on `resources.preview_text` with the same filters
+3. **Clan fallback**: if both text searches return nothing and `module_id` is provided, returns the most recently uploaded active resources for the clan/module ordered by `uploaded_at DESC`
+
+Text-match results are assigned a fixed `similarity` score of `0.75`. Clan-fallback results are assigned `0.5`.
+
+If both `topic` and `clan_id` are empty strings, the endpoint returns `{"success": true, "resources": []}` immediately without querying the database.
+
+---
+
+## Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/search-resources \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "JOINs",
+    "clan_id": "Alpha",
+    "module_id": 3,
+    "limit": 3,
+    "coder_id": 42
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/search-resources",
+    json={
+        "topic": "JOINs",
+        "clan_id": "Alpha",
+        "module_id": 3,
+        "limit": 3,
+        "coder_id": 42,
+    },
+    timeout=5.0,
+)
+resources = response.json()["resources"]
+for r in resources:
+    print(r["title"], r["similarity"])
+```
+
+</CodeGroup>
+
+---
+
+## Response
+
+<ResponseField name="success" type="boolean">
+  Always `true` — this endpoint does not raise HTTP errors; an empty result set is represented as `resources: []`.
+</ResponseField>
+
+<ResponseField name="resources" type="array">
+  List of matching resource objects (up to `limit`). Empty array when nothing is found.
+
+  <Expandable title="resource object">
+    <ResponseField name="id" type="integer">
+      Supabase row ID.
+    </ResponseField>
+
+    <ResponseField name="title" type="string">
+      The resource title as entered by the TL.
+    </ResponseField>
+
+    <ResponseField name="file_name" type="string">
+      Original uploaded file name.
+    </ResponseField>
+
+    <ResponseField name="preview_text" type="string">
+      Extracted text preview from the document (used for search and display).
+    </ResponseField>
+
+    <ResponseField name="storage_path" type="string">
+      Supabase Storage path. Use the Node.js backend to generate a signed URL for download.
+    </ResponseField>
+
+    <ResponseField name="module_id" type="integer">
+      The module this resource is associated with.
+    </ResponseField>
+
+    <ResponseField name="uploaded_at" type="string">
+      ISO 8601 timestamp of when the TL uploaded the resource.
+    </ResponseField>
+
+    <ResponseField name="similarity" type="number">
+      Match confidence score. `0.75` for text-match results; `0.5` for clan-fallback results.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Example response
+
+```json
+{
+  "success": true,
+  "resources": [
+    {
+      "id": 31,
+      "title": "Guía de JOINs en PostgreSQL — Clan Alpha",
+      "file_name": "joins_guia_alpha.pdf",
+      "preview_text": "Este documento cubre INNER JOIN, LEFT JOIN, RIGHT JOIN y FULL OUTER JOIN con ejemplos prácticos sobre las tablas del módulo de Bases de Datos...",
+      "storage_path": "resources/clan_alpha/module_3/joins_guia_alpha.pdf",
+      "module_id": 3,
+      "uploaded_at": "2026-03-10T14:22:00Z",
+      "similarity": 0.75
+    },
+    {
+      "id": 28,
+      "title": "Ejercicios resueltos SQL — Semana 2",
+      "file_name": "ejercicios_semana2.pdf",
+      "preview_text": "Colección de ejercicios resueltos que incluyen GROUP BY, JOINs y subqueries...",
+      "storage_path": "resources/clan_alpha/module_3/ejercicios_semana2.pdf",
+      "module_id": 3,
+      "uploaded_at": "2026-03-08T09:10:00Z",
+      "similarity": 0.75
+    }
+  ]
+}
+```
+
+---
+
+## Embedding model
+
+The microservice loads `all-MiniLM-L6-v2` from `sentence-transformers` at startup:
+
+- **Dimensions**: 384
+- **Normalization**: `normalize_embeddings=True` so cosine similarity equals dot product
+- **Usage**: `embed_text(text: str) -> List[float]` in `embedding_service.py`
+- **Status check**: `GET /health` returns `"embeddings": "all-MiniLM-L6-v2 (384d)"` when loaded, `"unavailable"` if the model failed to initialize
+
+The embedding model is available for use in future semantic search features. If you need to query resources by vector similarity, call `embed_text()` from within the service layer and compare against stored embeddings in Supabase.
+
+---
+
+## Errors
+
+This endpoint does not raise HTTP errors for empty results. All Supabase exceptions are caught internally and return an empty `resources` array. Check service logs for `[Resources]` entries if results are unexpectedly empty.

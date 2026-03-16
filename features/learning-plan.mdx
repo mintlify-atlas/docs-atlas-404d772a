@@ -1,0 +1,114 @@
+---
+title: "Personalized learning plan"
+description: "How Kairo generates adaptive 4-week study plans for each Coder."
+---
+
+After you complete onboarding, Kairo generates a **personalized 4-week study plan** tailored to your learning profile and your current position in the bootcamp. Every plan consists of 20 daily sessions organized across 4 weeks, with activities calibrated to your soft skills scores, learning style, and any topics you're struggling with.
+
+## What the AI uses to build your plan
+
+Kairo's Python AI microservice (`POST /generate-plan`) pulls together three data sources before generating a single line of your plan:
+
+<CardGroup cols={3}>
+  <Card title="Soft skills snapshot" icon="brain">
+    Your 5 dimension scores (autonomy, time management, problem solving, communication, teamwork) and learning style from the onboarding diagnostic.
+  </Card>
+  <Card title="Moodle progress" icon="graduation-cap">
+    Your current week, average score, completed weeks history, and any topics where your scores indicate difficulty.
+  </Card>
+  <Card title="Module context" icon="book">
+    The name and topic list of your current bootcamp module, so every activity is grounded in what you're studying right now.
+  </Card>
+</CardGroup>
+
+The plan generation supports two modes:
+
+| Mode | Trigger | Focus |
+|------|---------|-------|
+| `interpretive` | Default for first-time plan | Builds around your learning style and module topics |
+| `analytical` | When Moodle data is available | Incorporates your average score and struggling topics to target weak areas |
+
+## Plan structure
+
+Every plan spans **20 days across 4 weeks** (5 working days per week). Each day contains two activity cards:
+
+- A **technical activity** — focused on a module topic or struggling concept
+- A **soft skill activity** — a short reflection or practice exercise targeting one of your 5 dimensions
+
+### The 4-week arc
+
+| Week | Purpose |
+|------|---------|
+| Week 1 | Foundation — address highest-priority gaps |
+| Week 2 | Reinforcement — deepen understanding of core topics |
+| Week 3 | Application — practice through guided exercises |
+| Week 4 | Simulation — autonomous work and performance test preparation |
+
+Day 20 is always a **performance simulation day**: you work under timed, no-help conditions to assess your readiness.
+
+## How plans are stored
+
+Completed plans are persisted in the `complementary_plans` table:
+
+```sql
+CREATE TABLE complementary_plans (
+  id                     SERIAL PRIMARY KEY,
+  coder_id               INT NOT NULL,
+  module_id              INT NOT NULL,
+  plan_content           JSONB NOT NULL,
+  priority_level         priority_level_enum DEFAULT 'medium',
+  soft_skills_snapshot   JSONB,
+  moodle_status_snapshot JSONB,
+  targeted_soft_skill    VARCHAR,
+  is_active              BOOLEAN DEFAULT TRUE,
+  generated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Key columns:
+
+- **`plan_content`** — the full AI-generated plan as JSONB, including all 20 days of activities
+- **`soft_skills_snapshot`** — a point-in-time copy of your soft skills scores at generation time, used for plan comparison
+- **`moodle_status_snapshot`** — stores `plan_type`, `current_week`, `module_name`, `average_score`, and `struggling_topics` as they were when the plan was created
+- **`targeted_soft_skill`** — the single soft skill dimension the AI prioritized for this plan cycle
+- **`is_active`** — only one plan is active at a time; generating a new plan deactivates the previous one
+
+## Viewing your plan on the dashboard
+
+Your dashboard displays your active plan status in the **welcome card** at the top of the screen. The plan badge appears when `is_active = true`:
+
+```
+⚡ Plan activo
+```
+
+The full plan view is available in the **AI Trainer** tab, where you can navigate week by week and day by day through all 20 sessions.
+
+## Requesting a new plan
+
+You can request a new plan at any time from the AI Trainer screen by clicking **"Generar mi plan personalizado"**. Kairo:
+
+<Steps>
+  <Step title="Deactivates your current plan">
+    The existing active plan's `is_active` flag is set to `false`.
+  </Step>
+  <Step title="Sends a fire-and-forget request to Python">
+    The Node.js backend posts to `POST /generate-plan` on the Python microservice without blocking the UI response. You see a "generating" state immediately.
+  </Step>
+  <Step title="Polls for completion">
+    The AI Trainer page polls `GET /api/coder/plan` every few seconds. When `hasPlan: true` is returned, the new plan loads automatically.
+  </Step>
+</Steps>
+
+<Tip>
+  If you refresh the page during plan generation, the AI Trainer automatically resumes polling and picks up the plan as soon as it's ready.
+</Tip>
+
+## Priority ordering of focus cards
+
+Each plan includes 6 focus cards ordered by the `priority_level_enum`:
+
+```sql
+CREATE TYPE priority_level_enum AS ENUM ('low', 'medium', 'high');
+```
+
+The distribution is always **2 high, 2 medium, 2 low**. High-priority cards target your struggling topics and lowest-scoring soft skill dimension directly. See [Focus cards](/features/focus-cards) for a full breakdown of what each card contains.

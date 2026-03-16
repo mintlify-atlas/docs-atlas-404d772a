@@ -1,0 +1,207 @@
+---
+title: "Migrations"
+description: "How to apply and manage database schema changes in Kairo."
+---
+
+Kairo tracks schema changes as numbered SQL migration files in `database/migrations/`. Each file is idempotent — it uses `IF NOT EXISTS` guards so re-running it does not produce errors.
+
+---
+
+## Apply order
+
+When setting up a fresh environment, apply database files in this sequence:
+
+<Steps>
+  <Step title="Create the base schema">
+    Run `schema.sql` to create all ENUM types, tables, indexes, and views.
+
+    ```sql
+    -- In Supabase: SQL Editor → paste and run schema.sql
+    -- Or from terminal:
+    psql -U your_user -d your_db -f schema.sql
+    ```
+  </Step>
+  <Step title="Enable Row Level Security">
+    Run `rls_policies.sql` to enable RLS on every table and create all access policies.
+
+    ```sql
+    psql -U your_user -d your_db -f rls_policies.sql
+    ```
+  </Step>
+  <Step title="Apply migrations in order">
+    Run each migration file in ascending numeric order.
+
+    ```sql
+    psql -U your_user -d your_db -f migrations/001_add_clans_and_priority_and_notifications.sql
+    psql -U your_user -d your_db -f migrations/002_add_raw_answers_to_soft_skills.sql
+    psql -U your_user -d your_db -f migrations/005_create_user_profiles.sql
+    ```
+  </Step>
+  <Step title="Load seed data (development only)">
+    Optionally run `seeds/users.sql` to populate test users, modules, topics, and progress records.
+
+    ```sql
+    psql -U your_user -d your_db -f seeds/users.sql
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Running `schema.sql` on an existing database that already has tables will fail unless you first uncomment the `DROP TABLE` / `DROP TYPE` block at the top of the file. This is a destructive reset — all data will be lost.
+</Warning>
+
+---
+
+## Directory structure
+
+```
+database/migrations/
+├── 001_add_clans_and_priority_and_notifications.sql
+├── 002_add_raw_answers_to_soft_skills.sql
+└── 005_create_user_profiles.sql
+```
+
+Migration files are prefixed with a three-digit sequence number. Skip numbers (001, 002, 005) are intentional — migrations 003 and 004 were superseded before being committed.
+
+---
+
+## Migration reference
+
+### `001_add_clans_and_priority_and_notifications.sql`
+
+**Date:** March 2026  
+**Purpose:** Enables clan segmentation, the 6-card priority system, and notification read state.
+
+Changes applied:
+
+1. Adds `clan_id VARCHAR(50)` to `users` with index `idx_users_clan_id`.
+2. Creates the `priority_level_enum` type (`low`, `medium`, `high`) if it does not already exist.
+3. Adds `priority_level priority_level_enum DEFAULT 'medium'` to `complementary_plans` with index `idx_complementary_plans_priority`.
+4. Adds `is_read BOOLEAN DEFAULT FALSE` to `tl_feedback` with indexes `idx_tl_feedback_is_read` and `idx_tl_feedback_coder_unread`.
+
+```sql
+-- 1. Add clan_id to users
+ALTER TABLE users ADD COLUMN IF NOT EXISTS clan_id VARCHAR(50);
+CREATE INDEX IF NOT EXISTS idx_users_clan_id ON users(clan_id);
+
+-- 2. Create priority_level_enum (safe, skips if exists)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'priority_level_enum') THEN
+        CREATE TYPE priority_level_enum AS ENUM ('low', 'medium', 'high');
+    END IF;
+END
+$$;
+
+-- 3. Add priority_level to complementary_plans
+ALTER TABLE complementary_plans
+  ADD COLUMN IF NOT EXISTS priority_level priority_level_enum DEFAULT 'medium';
+CREATE INDEX IF NOT EXISTS idx_complementary_plans_priority
+  ON complementary_plans(priority_level);
+
+-- 4. Add is_read to tl_feedback
+ALTER TABLE tl_feedback ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_tl_feedback_is_read ON tl_feedback(is_read);
+CREATE INDEX IF NOT EXISTS idx_tl_feedback_coder_unread ON tl_feedback(coder_id, is_read);
+```
+
+---
+
+### `002_add_raw_answers_to_soft_skills.sql`
+
+**Purpose:** Fixes an `INSERT` failure in the `softSkills.js` model caused by a missing column.
+
+Changes applied:
+
+1. Adds `raw_answers JSONB` to `soft_skills_assessment`.
+
+```sql
+ALTER TABLE soft_skills_assessment
+  ADD COLUMN IF NOT EXISTS raw_answers JSONB;
+
+COMMENT ON COLUMN soft_skills_assessment.raw_answers
+  IS 'Full onboarding answers array [{questionId, optionId, score}] for audit/re-processing';
+```
+
+<Note>
+This column is also present in the current `schema.sql`. If you are applying `schema.sql` fresh (not upgrading an existing database), this migration is a no-op.
+</Note>
+
+---
+
+### `005_create_user_profiles.sql`
+
+**Purpose:** Adds an extended profile table for personal, social, and portfolio data.
+
+Changes applied:
+
+1. Creates `user_profiles` table with personal contact and social link fields.
+2. Adds index `idx_user_profiles_user_id`.
+
+```sql
+CREATE TABLE IF NOT EXISTS user_profiles (
+  user_id       INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  phone         VARCHAR(20),
+  location      VARCHAR(100),
+  birth_date    DATE,
+  bio           TEXT,
+  github_url    TEXT,
+  linkedin_url  TEXT,
+  twitter_url   TEXT,
+  portfolio_url TEXT,
+  updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
+
+COMMENT ON TABLE user_profiles
+  IS 'Detailed profile information for both coders and TLs (PostgreSQL side)';
+```
+
+`user_id` is both the primary key and a foreign key referencing `users(id) ON DELETE CASCADE`, so the profile row is removed automatically when a user is deleted.
+
+---
+
+## Adding a new migration
+
+<Steps>
+  <Step title="Pick the next sequence number">
+    Use the next unused number after the highest existing prefix. The current highest is `005`, so the next migration should be `006_description.sql`.
+  </Step>
+  <Step title="Write the migration file">
+    Use `IF NOT EXISTS` / `IF EXISTS` guards on every statement so the file is safe to re-run.
+
+    ```sql
+    -- 006_add_cohort_id_to_users.sql
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS cohort_id INT;
+    CREATE INDEX IF NOT EXISTS idx_users_cohort_id ON users(cohort_id);
+    ```
+  </Step>
+  <Step title="Test on a staging database">
+    Apply the migration to a copy of the production schema before running it against the live database.
+  </Step>
+  <Step title="Apply to production">
+    Paste into the Supabase SQL Editor and run. Check the output for errors before proceeding.
+  </Step>
+  <Step title="Update schema.sql">
+    Add the new columns or tables to `schema.sql` so future fresh installs include them without needing to run the migration separately.
+  </Step>
+</Steps>
+
+---
+
+## Applying via Supabase CLI
+
+If you prefer the Supabase CLI over the SQL Editor:
+
+```bash
+# Link your project
+supabase link --project-ref your-project-ref
+
+# Apply a specific file
+supabase db execute --file migrations/006_add_cohort_id_to_users.sql
+```
+
+<Note>
+Kairo does not currently use Supabase's built-in migration tracking (`supabase migrations`). Migration files are managed manually. If you adopt the Supabase migration system, create the `supabase/migrations/` directory and move the files there, renaming them to include a timestamp prefix as required by the CLI.
+</Note>

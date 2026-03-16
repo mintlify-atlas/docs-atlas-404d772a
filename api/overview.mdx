@@ -1,0 +1,140 @@
+---
+title: "API overview"
+description: "Base URL, authentication, response format, and error codes for the Kairo Node.js API Gateway."
+---
+
+The Kairo Node.js API Gateway is an Express application that handles authentication, session management, business logic, and proxying to the Python AI microservice. All routes are prefixed with `/api`.
+
+## Base URL
+
+| Environment | URL |
+|---|---|
+| Development | `http://localhost:3000` |
+| Production | Set by your deployment host |
+
+## Route prefixes
+
+| Prefix | Description |
+|---|---|
+| `/api/auth` | Registration, login, OTP, OAuth callbacks |
+| `/api/coder` | Coder dashboard, plans, exercises, resources |
+| `/api/tl` | TL dashboard, feedback, submissions, resources |
+| `/api/ai` | Proxy to Python AI microservice |
+| `/api/notifications` | Real-time SSE stream and notification REST endpoints |
+| `/api/profile` | User profile read and update |
+| `/api/diagnostics` | Onboarding soft-skills diagnostic |
+| `/api/tl/assignment` | TL assignment management |
+| `/api/coder/assignments` | Coder assignment list and downloads |
+| `/api/health` | Service health check |
+
+## Authentication
+
+Kairo uses **server-side sessions** backed by PostgreSQL. After a successful login or OAuth callback, the server sets a `riwi.sid` cookie.
+
+```
+Set-Cookie: riwi.sid=<signed-session-id>; HttpOnly; SameSite=Lax
+```
+
+Include this cookie on every authenticated request. Most HTTP clients (browsers, `fetch` with `credentials: 'include'`, `axios` with `withCredentials: true`) handle this automatically.
+
+<Note>
+  In production the cookie is `Secure` and `SameSite=None`. In development it is `SameSite=Lax` and does not require HTTPS.
+</Note>
+
+### CORS
+
+The gateway enforces an origin allowlist:
+
+- **Production**: `FRONTEND_URL` environment variable (origin only, no trailing slash).
+- **Development**: `http://localhost:5500` and `http://localhost:5173`.
+
+Requests from unlisted origins receive a `CORS` error. Credentials (`cookies`) are always sent with `Access-Control-Allow-Credentials: true`.
+
+## Role-based access
+
+Every protected route checks the session user's `role` field. The two application roles are:
+
+| Role | Description |
+|---|---|
+| `coder` | Bootcamp student |
+| `tl` | Team Leader / instructor |
+
+Routes that require a role return `403 Forbidden` when the authenticated user does not hold it. The `checkOnboarding` middleware additionally blocks `coder` users who have not yet completed the diagnostic assessment (returns `403` with `requiresOnboarding: true`).
+
+## Standard response format
+
+Successful responses return JSON. The shape varies per endpoint but follows these conventions:
+
+```json
+// Single-resource response
+{ "user": { "id": 1, "fullName": "...", ... } }
+
+// Collection response
+{ "assignments": [...], "total": 5 }
+
+// Mutation response
+{ "success": true, "message": "..." }
+```
+
+Error responses always include an `error` field:
+
+```json
+{ "error": "Brief description." }
+```
+
+## HTTP error codes
+
+| Status | Meaning |
+|---|---|
+| `400` | Bad request — missing or invalid body fields |
+| `401` | Unauthenticated — no active session or session expired |
+| `403` | Forbidden — authenticated but wrong role, or onboarding not completed |
+| `404` | Resource or endpoint not found |
+| `409` | Conflict — e.g. email already registered |
+| `500` | Internal server error |
+| `502` | AI service returned an error or is unreachable |
+| `503` | Service unavailable (database connectivity) |
+
+## Rate limiting
+
+The gateway applies `express-rate-limit` to authentication endpoints:
+
+| Limiter | Window | Max requests |
+|---|---|---|
+| Auth limiter | 15 minutes | 20 requests per IP |
+| OTP limiter | 10 minutes | 5 requests per IP |
+
+When the limit is exceeded, the server responds with `429 Too Many Requests`:
+
+```json
+{ "error": "Too many requests, please try again later." }
+```
+
+<Warning>
+  The rate limiters apply to login and OTP endpoints. Automating repeated authentication requests against a production instance will result in your IP being temporarily blocked.
+</Warning>
+
+## Health check
+
+### `GET /api/health`
+
+Returns the current status of the gateway and its PostgreSQL connection. No authentication required.
+
+**Response (200):**
+
+```json
+{
+  "status": "active",
+  "uptime": 342.18,
+  "database": {
+    "connected": true,
+    "timestamp": "2026-03-16T12:00:00.000Z"
+  }
+}
+```
+
+**Response (503):** returned when the database is unreachable.
+
+```json
+{ "status": "unstable", "error": "connection refused" }
+```

@@ -1,0 +1,303 @@
+---
+title: "Exercises"
+description: "POST /generate-exercise and POST /exercise/{id}/submit — Generate and submit coding exercises."
+---
+
+## Overview
+
+The exercises router exposes two endpoints:
+
+- **`POST /generate-exercise`** — generates (or returns a cached) coding exercise for a specific day in a coder's plan
+- **`POST /exercise/{id}/submit`** — saves a coder's code submission for TL review
+
+Exercises are **cached per `(plan_id, day_number)`**: the same exercise is always served for the same plan day, so re-opening the day view never triggers a new LLM call.
+
+<Warning>
+  On a cache miss, the LLM call takes **4–10 seconds** (`max_tokens=2048`). Day 20 (Week 4 Day 5, the performance simulation) generates a significantly more complex exercise and may take up to **15 seconds**.
+</Warning>
+
+---
+
+## POST /generate-exercise
+
+### Endpoint
+
+```
+POST /generate-exercise
+```
+
+### Request body
+
+<ParamField body="coder_id" type="integer" required>
+  The coder's user ID. Used to fetch the soft-skills profile for personalization (learning style, autonomy score, problem-solving score).
+</ParamField>
+
+<ParamField body="plan_id" type="integer" required>
+  The active complementary plan ID. Combined with `day_number` to form the cache key (`UNIQUE(plan_id, day_number)`).
+</ParamField>
+
+<ParamField body="day_number" type="integer" required>
+  The day index within the plan (1–20). Day 20 (or any day 5 of week 4) triggers the performance simulation prompt — a longer, multi-concept integrating exercise.
+</ParamField>
+
+<ParamField body="week_number" type="integer" required>
+  The week index (1–4). Used in the prompt for context and to detect whether this is the performance simulation day.
+</ParamField>
+
+<ParamField body="topic" type="string" required>
+  The topic name for the exercise, taken from the plan's `technical_activity.title` for this day (e.g. `"JOINs en PostgreSQL"`).
+</ParamField>
+
+<ParamField body="description" type="string" default="">
+  Optional additional context from `technical_activity.description`. Helps the LLM understand the scope of the exercise.
+</ParamField>
+
+<ParamField body="difficulty" type="string" default="intermediate">
+  Desired difficulty level: `"beginner"` | `"intermediate"` | `"advanced"`.
+</ParamField>
+
+<ParamField body="module_name" type="string" default="Bases de Datos">
+  The name of the current module. Used to auto-detect the programming language if `language` is not provided. Mapping: `"bases de datos"` / `"sql"` → `sql`; `"python"` → `python`; `"javascript"` / `"js"` / `"node"` → `javascript`; `"html"` / `"css"` / `"web"` → `html`.
+</ParamField>
+
+<ParamField body="language" type="string">
+  Optional. Override the auto-detected language. Accepted values: `"sql"` | `"python"` | `"javascript"` | `"html"`. If omitted, the language is inferred from `module_name`.
+</ParamField>
+
+### AI behavior
+
+<Note>
+  **Model**: `llama-3.3-70b-versatile` (the `MODEL` constant from `ia_services.py`), `temperature=0.6`, `max_tokens=2048`, `response_format: {"type": "json_object"}`.
+
+  The prompt builder (`build_exercise_prompt()`) personalizes the exercise by:
+  - Adapting the problem statement tone to the coder's **learning style** (visual → analogies; kinesthetic → immediate code; reading → contextual background; auditory → verbal description)
+  - Adjusting the number of hints based on **autonomy score** (autonomy ≤ 2 → 3 detailed progressive hints; autonomy 3 → 2 concise hints; autonomy ≥ 4 → 1 hint)
+  - Adding guide comments to `starter_code` if **problem_solving score** ≤ 2
+  - Day 20 / Week 4 Day 5: injects performance simulation instructions (no hints, 40–50 min target, multi-concept scenario)
+
+  Language-specific rules are also injected:
+  - **SQL**: PostgreSQL syntax, `starter_code` includes `CREATE TABLE` / `WITH` for a self-contained exercise
+  - **Python**: self-contained, function signature + docstring in `starter_code`
+  - **JavaScript**: Vanilla JS, function template in `starter_code`
+  - **HTML**: HTML5 + inline CSS, base structure in `starter_code`
+
+  If the Groq call fails or returns unparseable JSON, a safe fallback exercise is returned with `success: false` and `status: "fallback"`.
+</Note>
+
+### Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/generate-exercise \
+  -H "Content-Type: application/json" \
+  -d '{
+    "coder_id": 42,
+    "plan_id": 188,
+    "day_number": 3,
+    "week_number": 1,
+    "topic": "JOINs en PostgreSQL",
+    "description": "Practica INNER JOIN y LEFT JOIN con esquemas reales",
+    "difficulty": "intermediate",
+    "module_name": "Bases de Datos"
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/generate-exercise",
+    json={
+        "coder_id": 42,
+        "plan_id": 188,
+        "day_number": 3,
+        "week_number": 1,
+        "topic": "JOINs en PostgreSQL",
+        "description": "Practica INNER JOIN y LEFT JOIN con esquemas reales",
+        "difficulty": "intermediate",
+        "module_name": "Bases de Datos",
+    },
+    timeout=20.0,
+)
+data = response.json()
+exercise = data["exercise"]
+```
+
+</CodeGroup>
+
+### Response
+
+<ResponseField name="success" type="boolean">
+  `true` when the exercise was generated (or retrieved from cache) successfully. `false` on fallback.
+</ResponseField>
+
+<ResponseField name="cached" type="boolean">
+  `true` when the exercise was served from the database cache (no LLM call made).
+</ResponseField>
+
+<ResponseField name="exercise" type="object">
+  The exercise object.
+
+  <Expandable title="exercise fields">
+    <ResponseField name="id" type="integer">
+      Supabase row ID (only present on fresh generation; absent on cache hit unless the cached row includes it).
+    </ResponseField>
+
+    <ResponseField name="title" type="string">
+      Specific exercise title.
+    </ResponseField>
+
+    <ResponseField name="description" type="string">
+      Full problem statement adapted to the coder's learning style.
+    </ResponseField>
+
+    <ResponseField name="language" type="string">
+      Programming language: `"sql"` | `"python"` | `"javascript"` | `"html"`.
+    </ResponseField>
+
+    <ResponseField name="difficulty" type="string">
+      `"beginner"` | `"intermediate"` | `"advanced"`.
+    </ResponseField>
+
+    <ResponseField name="topic" type="string">
+      The topic this exercise covers.
+    </ResponseField>
+
+    <ResponseField name="starter_code" type="string">
+      Ready-to-run code scaffold the coder starts from. For SQL: includes `CREATE TABLE` statements. For Python: includes function signature and docstring.
+    </ResponseField>
+
+    <ResponseField name="solution" type="string">
+      Complete correct solution. Hidden from the coder UI until they submit.
+    </ResponseField>
+
+    <ResponseField name="expected_output" type="string">
+      Human-readable description of what a correct solution should produce.
+    </ResponseField>
+
+    <ResponseField name="hints" type="array">
+      Progressive hints as strings. Number varies by autonomy score (1–3 hints). First hint is obvious; last hint nearly reveals the solution.
+    </ResponseField>
+
+    <ResponseField name="status" type="string">
+      Only present on fallback: `"fallback"`. Absent on successful generation.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example response
+
+```json
+{
+  "success": true,
+  "cached": false,
+  "exercise": {
+    "id": 94,
+    "title": "Clientes y sus pedidos: INNER JOIN vs LEFT JOIN",
+    "description": "Escribe dos queries sobre las tablas customers y orders: una con INNER JOIN que muestre solo los clientes que tienen pedidos, y otra con LEFT JOIN que muestre todos los clientes incluyendo los que no han pedido nada.",
+    "language": "sql",
+    "difficulty": "intermediate",
+    "topic": "JOINs en PostgreSQL",
+    "starter_code": "-- Esquema\nCREATE TABLE customers (\n  id SERIAL PRIMARY KEY,\n  name TEXT NOT NULL\n);\nCREATE TABLE orders (\n  id SERIAL PRIMARY KEY,\n  customer_id INT REFERENCES customers(id),\n  amount NUMERIC\n);\nINSERT INTO customers VALUES (1,'Ana'),(2,'Luis'),(3,'María');\nINSERT INTO orders VALUES (1,1,150),(2,1,200),(3,2,80);\n\n-- Query 1: Solo clientes con pedidos\nSELECT \n\n-- Query 2: Todos los clientes\nSELECT ",
+    "solution": "-- Query 1\nSELECT c.name, o.amount\nFROM customers c\nINNER JOIN orders o ON c.id = o.customer_id;\n\n-- Query 2\nSELECT c.name, o.amount\nFROM customers c\nLEFT JOIN orders o ON c.id = o.customer_id;",
+    "expected_output": "Query 1 devuelve 3 filas (Ana aparece dos veces). Query 2 devuelve 4 filas, con NULL en amount para María.",
+    "hints": [
+      "¿Qué columna tienen en común las dos tablas?",
+      "La cláusula ON define la condición del JOIN: ON tabla1.columna = tabla2.columna."
+    ]
+  }
+}
+```
+
+---
+
+## POST /exercise/{id}/submit
+
+### Endpoint
+
+```
+POST /exercise/{id}/submit
+```
+
+Saves the coder's code submission to the `exercise_submissions` table. There is no automated grading — the TL reviews submissions manually via the TL dashboard.
+
+### Path parameter
+
+<ParamField path="id" type="integer" required>
+  The exercise ID returned by `POST /generate-exercise` (the `exercise.id` field).
+</ParamField>
+
+### Request body
+
+<ParamField body="coder_id" type="integer" required>
+  The coder's user ID.
+</ParamField>
+
+<ParamField body="code" type="string" required>
+  The coder's submitted solution. Cannot be empty.
+</ParamField>
+
+### Example request
+
+<CodeGroup>
+
+```bash cURL
+curl -X POST https://your-ai-service/exercise/94/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "coder_id": 42,
+    "code": "SELECT c.name, o.amount FROM customers c INNER JOIN orders o ON c.id = o.customer_id;"
+  }'
+```
+
+```python Python (httpx)
+import httpx
+
+response = httpx.post(
+    "https://your-ai-service/exercise/94/submit",
+    json={
+        "coder_id": 42,
+        "code": "SELECT c.name, o.amount FROM customers c INNER JOIN orders o ON c.id = o.customer_id;",
+    },
+    timeout=10.0,
+)
+print(response.json())
+```
+
+</CodeGroup>
+
+### Response
+
+<ResponseField name="success" type="boolean">
+  `true` when the submission was saved.
+</ResponseField>
+
+<ResponseField name="submission_id" type="integer">
+  The Supabase row ID of the saved submission in `exercise_submissions`.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Confirmation message shown to the coder, e.g. `"¡Solución enviada! Tu TL podrá revisar tu código."`
+</ResponseField>
+
+### Example response
+
+```json
+{
+  "success": true,
+  "submission_id": 317,
+  "message": "¡Solución enviada! Tu TL podrá revisar tu código."
+}
+```
+
+---
+
+## Errors
+
+| Endpoint | HTTP status | Condition |
+|---|---|---|
+| `/generate-exercise` | `200` with `success: false` | Groq call failed or returned invalid JSON — fallback exercise returned |
+| `/exercise/{id}/submit` | `400` | `coder_id` missing from request body |
+| `/exercise/{id}/submit` | `400` | `code` is empty |
+| `/exercise/{id}/submit` | `500` | Supabase insert to `exercise_submissions` failed |

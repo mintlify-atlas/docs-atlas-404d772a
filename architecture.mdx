@@ -1,0 +1,150 @@
+---
+title: "Architecture"
+description: "How Kairo's hybrid Node.js + Python system works together."
+---
+
+Kairo uses a **three-tier hybrid architecture**: a Vanilla JS frontend, a Node.js API gateway, and a Python FastAPI AI microservice. Each tier has a distinct responsibility, and they communicate over HTTP.
+
+---
+
+## System overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        BROWSER                              │
+│          Vanilla JS + Bootstrap 5  (port 5500)              │
+└───────────────────────┬─────────────────────────────────────┘
+                        │  REST (credentials: include)
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│               NODE.JS API GATEWAY  (port 3000)              │
+│                                                             │
+│  • Express 5          • Session store (connect-pg-simple)   │
+│  • Passport.js        • Rate limiting (express-rate-limit)  │
+│  • CORS guard         • Business logic & DB queries (pg)    │
+│                                                             │
+│  Routes:                                                    │
+│    /api/auth          /api/coder      /api/tl               │
+│    /api/ai  ──────────────────────────────────────────────┐ │
+│    /api/notifications /api/profile    /api/diagnostics    │ │
+└───────────────────────────────────────────────────────────┼─┘
+                                                            │  HTTP proxy
+                                                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│           PYTHON AI MICROSERVICE  (port 8000)               │
+│                                                             │
+│  • FastAPI 0.115      • LangChain prompt orchestration      │
+│  • Groq SDK           • all-MiniLM-L6-v2 embeddings (384d)  │
+│  • Supabase Python    • RAG (resources_search router)       │
+│                                                             │
+│  Endpoints:                                                 │
+│    POST /generate-plan         POST /generate-focus-cards   │
+│    POST /chat/ask              POST /generate-report        │
+│    POST /generate-exercise     POST /exercise/{id}/submit   │
+│    POST /search-resources                                   │
+└───────────────────────┬─────────────────────────────────────┘
+                        │  supabase-js / supabase-py
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│            POSTGRESQL ON SUPABASE  (port 5432)              │
+│                                                             │
+│  14 tables · 8 ENUM types · 2 views · RLS policies          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Request flow: generating a learning plan
+
+This trace shows what happens when a Coder requests a personalized learning plan:
+
+1. **Browser** sends `POST /api/ai/generate-plan` to the Node.js gateway with a session cookie.
+2. **Node.js** authenticates the session, reads the Coder's `moodle_progress` and `soft_skills_assessment` from PostgreSQL, and assembles the context payload.
+3. **Node.js** forwards the payload to `POST http://localhost:8000/generate-plan` on the Python microservice.
+4. **Python** constructs a LangChain prompt combining weak topics, learning style, and module context, then calls the Groq API (model: `Qwen2.5-7B-Instruct` or as configured in `MODEL_NAME`).
+5. **Python** parses the JSON response, writes 6 `complementary_plans` records (2 high / 2 medium / 2 low priority) and their `plan_activities` to Supabase, then logs the full operation in `ai_generation_log`.
+6. **Python** returns the plan summary to Node.js.
+7. **Node.js** returns the response to the browser.
+8. **Frontend** renders the 6 Cards ordered by `priority_level DESC`.
+
+---
+
+## Node.js API gateway
+
+The gateway (`backend-node/src/server.js`) is the single entry point for all browser requests. Its responsibilities are:
+
+- **Authentication** — local email/password (bcrypt), GitHub OAuth, and Google OAuth via Passport.js. Sessions are persisted in the `session` PostgreSQL table via `connect-pg-simple`.
+- **Session management** — 24-hour cookie (`riwi.sid`), `httpOnly`, `sameSite: none` in production.
+- **Business logic** — CRUD operations for users, Moodle progress, plan activities, feedback, and evidence submissions via the `pg` pool.
+- **AI proxy** — the `/api/ai` routes forward requests to the Python microservice and relay responses back to the browser. The Python service URL is configured via `PYTHON_API_URL`.
+- **Rate limiting** — auth routes are limited to 20 requests per 15 minutes; OTP routes to 5 per 10 minutes.
+- **CORS** — in production, only the origin derived from `FRONTEND_URL` is allowed. In development, `http://localhost:5500` and `http://localhost:5173` are always permitted.
+
+### Route map
+
+| Mount point | Router file | Purpose |
+|---|---|---|
+| `/api/auth` | `authRoutes.js` | Login, register, OAuth callbacks, OTP |
+| `/api/coder` | `coderRoutes.js` | Coder dashboard data, plans, progress |
+| `/api/tl` | `tlRoutes.js` | Team Leader analytics, clan views |
+| `/api/ai` | `iaRoutes.js` | Proxy to Python AI microservice |
+| `/api/notifications` | `notificationRoutes.js` | TL feedback read/unread state |
+| `/api/profile` | `profileRoutes.js` | Soft-skills assessment, profile edits |
+| `/api/diagnostics` | `diagnosticRoutes.js` | First-login onboarding quiz |
+| `/api` | `assignmentRoutes.js` | Activity completion, evidence upload |
+| `/api/health` | inline | DB connectivity check |
+
+---
+
+## Python AI microservice
+
+The microservice (`backend-python/main.py`) handles all AI inference and is designed to be stateless — it reads from and writes to Supabase directly using the service-role key.
+
+- **LLM inference** — uses the Groq SDK via an OpenAI-compatible endpoint. The model is configured via `MODEL_NAME` (default: `llama-3.3-70b-versatile`; the README references `Qwen2.5-7B-Instruct`).
+- **Embeddings** — `all-MiniLM-L6-v2` (384 dimensions) for semantic resource search.
+- **RAG** — the `resources_search` router embeds a query, performs a vector similarity search, and returns curated learning resources.
+- **LangChain** — manages prompt construction, JSON output validation, and retry logic for all AI agents.
+- **CORS** — always allows `http://localhost:3000`, `http://localhost:5500`, and `http://127.0.0.1:5500`. Reads `NODE_URL` and `FRONTEND_URL` from the environment to add production origins.
+
+### AI agents
+
+Three logical agents map to the `ai_agent_enum` values in the database:
+
+| Agent (`ai_agent_enum`) | Endpoint | What it does |
+|---|---|---|
+| `learning_plan` | `POST /generate-plan` | Generates a personalized 4-week roadmap from Moodle data and soft-skills scores |
+| `report_generator` | `POST /generate-report` | Produces executive summaries for Team Leaders about a Coder, clan, or cohort |
+| `risk_detector` | `POST /generate-focus-cards` | Identifies at-risk patterns and generates prioritized focus cards |
+
+Every agent call is recorded in `ai_generation_log` with the full input payload, output payload, model name, execution time, and success flag.
+
+---
+
+## Database layer
+
+Kairo uses **PostgreSQL 14+ hosted on Supabase**. The schema defines:
+
+- **14 tables** covering users, assessments, academic progress, personalized plans, activity tracking, feedback, risk alerts, AI reports, and audit logs.
+- **8 custom ENUM types** that enforce valid values at the database level: `role_enum`, `learning_style_enum`, `activity_type_enum`, `feedback_type_enum`, `risk_level_enum`, `report_target_enum`, `ai_agent_enum`, `priority_level_enum`.
+- **2 views**: `v_coder_dashboard` (aggregates a Coder's progress and completion percentage) and `v_coder_risk_analysis` (calculates risk level from autonomy scores and academic averages).
+- **Row Level Security (RLS)** — every table has policies that restrict Coders to their own records and grant Team Leaders read access to all records within their scope.
+
+Both backends connect to the same Supabase project: Node.js uses the `anon` key via `@supabase/supabase-js` and also connects directly through `pg` for session storage. Python uses the `service_role` key for privileged operations like writing generated plans.
+
+---
+
+## CORS configuration
+
+Both backends independently enforce CORS.
+
+**Node.js** (`server.js:44–68`):
+- In `development`: allows `http://localhost:5500` and `http://localhost:5173`.
+- In `production`: restricts to the origin parsed from `FRONTEND_URL`. If `FRONTEND_URL` is unset, all origins are temporarily allowed with a console warning.
+
+**Python** (`main.py:35–57`):
+- Always allows `http://localhost:3000`, `http://localhost:5500`, `http://127.0.0.1:5500`, and `http://localhost:8000`.
+- Reads `NODE_URL` and `FRONTEND_URL` from the environment and adds both `http` and `https` variants.
+
+<Warning>
+A mismatch between the `FRONTEND_URL` value and the actual origin serving the frontend is the most common source of CORS errors during local development. See [Running locally](/setup/running-locally) for troubleshooting steps.
+</Warning>
